@@ -133,13 +133,13 @@ void TupleInitialization::copyOrInitValueInto(SILGenFunction &SGF,
   auto sourceType = value.getType().castTo<TupleType>();
   assert(sourceType->getNumElements() == SubInitializations.size());
 
-  // We have to emit a different pattern when there are pack expansions.
-  // Fortunately, we can assume this doesn't happen with objects because
-  // tuples contain pack expansions are address-only.
-  auto containsPackExpansion = sourceType.containsPackExpansionType();
+  // We have to emit a different pattern when there are pack expansions
+  // (dynamic element count). Fortunately, we can assume this doesn't happen
+  // with objects because tuples with pack expansions are address-only.
+  auto hasDynamicElementCount = !sourceType.getStaticElementCount();
 
   CanPackType formalPackType;
-  if (containsPackExpansion)
+  if (hasDynamicElementCount)
     formalPackType = FormalTupleType.getInducedPackType();
 
   // Process all values before initialization all at once to ensure
@@ -149,7 +149,7 @@ void TupleInitialization::copyOrInitValueInto(SILGenFunction &SGF,
 
   // In the object case, destructure the tuple.
   if (value.getType().isObject()) {
-    assert(!containsPackExpansion);
+    assert(!hasDynamicElementCount);
     SGF.B.emitDestructureValueOperation(loc, value, destructuredValues);
   } else {
     // In the address case, we forward the underlying value and store it
@@ -163,14 +163,14 @@ void TupleInitialization::copyOrInitValueInto(SILGenFunction &SGF,
     auto sourceSILType = value.getType();
     for (auto i : range(sourceType->getNumElements())) {
       SILType fieldTy = sourceSILType.getTupleElementType(i);
-      if (containsPackExpansion && fieldTy.is<PackExpansionType>()) {
+      if (hasDynamicElementCount && fieldTy.is<PackExpansionType>()) {
         destructuredValues.push_back(
           cloner.cloneForTuplePackExpansionComponent(v, formalPackType, i));
         continue;
       }
 
       SILValue elt;
-      if (containsPackExpansion) {
+      if (hasDynamicElementCount) {
         auto packIndex = SGF.B.createScalarPackIndex(loc, i, formalPackType);
         elt = SGF.B.createTuplePackElementAddr(loc, packIndex, v, fieldTy);
       } else {
@@ -188,7 +188,7 @@ void TupleInitialization::copyOrInitValueInto(SILGenFunction &SGF,
   assert(destructuredValues.size() == SubInitializations.size());
 
   for (auto i : indices(destructuredValues)) {
-    if (containsPackExpansion) {
+    if (hasDynamicElementCount) {
       bool isPackExpansion =
         (destructuredValues[i].getValue() == value.getValue());
       assert(isPackExpansion ==
@@ -264,12 +264,12 @@ splitSingleBufferIntoTupleElements(SILGenFunction &SGF, SILLocation loc,
   // We can still split the initialization of a tuple with a pack
   // expansion component (as long as the initializer is cooperative),
   // but we have to emit a different code pattern.
-  bool hasExpansion = tupleType.containsPackExpansionType();
+  bool hasDynamicElementCount = !tupleType.getStaticElementCount();
 
-  // If there's an expansion in the tuple, we'll need the induced pack
+  // If there's a dynamic element count, we'll need the induced pack
   // type for the tuple elements below.
   CanPackType inducedPackType;
-  if (hasExpansion) {
+  if (hasDynamicElementCount) {
     inducedPackType = tupleType.getInducedPackType();
   }
 
@@ -281,7 +281,7 @@ splitSingleBufferIntoTupleElements(SILGenFunction &SGF, SILLocation loc,
     // If this element is a pack expansion, we have to produce an
     // Initialization that will drill appropriately to the right tuple
     // element within a dynamic pack loop.
-    if (hasExpansion && isa<PackExpansionType>(tupleType.getElementType(i))) {
+    if (hasDynamicElementCount && isa<PackExpansionType>(tupleType.getElementType(i))) {
       auto expansionInit =
         TuplePackExpansionInitialization::create(SGF, baseAddr,
                                                  inducedPackType, i);
@@ -294,7 +294,7 @@ splitSingleBufferIntoTupleElements(SILGenFunction &SGF, SILLocation loc,
     // If this element is scalar, but it's into a tuple with pack
     // expansions, produce a structural pack index into the induced
     // pack type and use that to project the right element.
-    } else if (hasExpansion) {
+    } else if (hasDynamicElementCount) {
       auto packIndex = SGF.B.createScalarPackIndex(loc, i, inducedPackType);
       auto eltTy = baseAddr->getType().getTupleElementType(i);
       eltAddr = SGF.B.createTuplePackElementAddr(loc, packIndex, baseAddr,

@@ -424,10 +424,12 @@ public:
 
     auto &tl = SGF.SGM.Types.getTypeLowering(t, SGF.getTypeExpansionContext());
 
-    // If the tuple contains pack expansions, and we're not emitting
+    // If the tuple contains pack expansions (either in the substituted type
+    // or in the original abstraction pattern), and we're not emitting
     // into an initialization already, create a temporary so that we're
     // always emitting into an initialization.
-    if (t.containsPackExpansionType() && !emitInto) {
+    if ((t.containsPackExpansionType() ||
+         orig.doesTupleContainPackExpansionType()) && !emitInto) {
       auto temporary = SGF.emitTemporary(loc, tl);
 
       auto result = expandTuple(orig, t, tl, temporary.get());
@@ -441,7 +443,8 @@ public:
 
   ManagedValue expandTuple(AbstractionPattern orig, CanTupleType t,
                            const TypeLowering &tl, Initialization *init) {
-    assert((!t.containsPackExpansionType() || init) &&
+    assert(((!t.containsPackExpansionType() &&
+             !orig.doesTupleContainPackExpansionType()) || init) &&
            "should always have an emission context when expanding "
            "a tuple containing pack expansions");
 

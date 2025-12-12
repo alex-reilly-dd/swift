@@ -2802,6 +2802,16 @@ public:
 
   unsigned getNumElements() const { return Bits.TupleType.Count; }
 
+  /// Returns the number of elements if the tuple has a statically-known
+  /// element count (i.e., contains no pack expansion types). Returns
+  /// std::nullopt if the tuple contains pack expansions, meaning the
+  /// actual element count is only known at runtime.
+  ///
+  /// Use this method when you need to statically enumerate tuple elements.
+  /// If you get std::nullopt, you must use dynamic iteration (e.g.,
+  /// emitDynamicPackLoop) instead of static indexing.
+  std::optional<unsigned> getStaticElementCount() const;
+
   /// Returns the number of non-PackExpansionType elements. This is the
   /// minimum length of the tuple after substitution; a tuple with
   /// zero or one scalar elements is unwrapped if it would otherwise be
@@ -2862,6 +2872,13 @@ BEGIN_CAN_TYPE_WRAPPER(TupleType, Type)
 
   bool containsPackExpansionType() const {
     return containsPackExpansionTypeImpl(*this);
+  }
+
+  /// Returns the number of elements if statically known, std::nullopt otherwise.
+  std::optional<unsigned> getStaticElementCount() const {
+    if (containsPackExpansionType())
+      return std::nullopt;
+    return getPointer()->getNumElements();
   }
 
   /// Induce a pack type from the elements of this tuple type.
