@@ -359,8 +359,10 @@ public:
     if (!isAddressable) {
       argIsLoadable = argType.isLoadable(SGF.F);
       // This can happen if the value is resilient in the calling convention
-      // but not resilient locally.
-      if (argIsLoadable) {
+      // but not resilient locally. We also need to check that the source type
+      // is loadable - pack elements are always passed as addresses even if the
+      // element type is loadable, so we can't load from them directly.
+      if (argIsLoadable && mv.getType().isLoadable(SGF.F)) {
         if (argType.isAddress()) {
           mv = SGF.B.createLoadWithSameOwnership(loc, mv);
           argType = argType.getObjectType();
@@ -369,8 +371,55 @@ public:
 
       assert(argType.getCategory() == mv.getType().getCategory());
       if (argType.getASTType() != mv.getType().getASTType()) {
-        // Reabstract the value if necessary.
-        mv = SGF.emitOrigToSubstValue(loc, mv.ensurePlusOne(SGF, loc), orig, t);
+        // When the source type involves pack-related constructs (pack element
+        // archetypes, pack expansions, or pack types) but the destination type
+        // is the concrete substitution, the types may differ only in their
+        // representation but have the same memory layout. Use an unchecked
+        // cast instead of reabstraction to avoid issues with the Transform
+        // visitor not handling these pack-related types properly.
+        //
+        // We check if:
+        // 1. The source type has a local archetype (pack element), OR
+        // 2. The abstraction pattern is a pack expansion, OR
+        // 3. The source type is a PackType (from vanishing tuple decomposition)
+        // AND the destination doesn't have local archetypes.
+        //
+        // However, we must NOT do this for function types, as they require
+        // proper reabstraction thunks even when archetypes are involved.
+        bool sourceHasLocalArchetype = mv.getType().hasLocalArchetype();
+        bool origIsPackExpansion = orig.isPackExpansion();
+        bool isFunctionType = argType.is<SILFunctionType>();
+
+        // Check if the source is a SILPackType AND the destination is NOT a
+        // SILPackType - this means we need to extract the element from the pack
+        // rather than reinterpreting the address.
+        auto sourceSILPackType = dyn_cast<SILPackType>(mv.getType().getASTType());
+        bool argIsPackType = isa<SILPackType>(argType.getASTType());
+
+        if (sourceSILPackType && !argIsPackType &&
+            sourceSILPackType->getNumElements() == 1) {
+          // For a single-element pack being used as a scalar, we need to
+          // extract the element. Create a scalar pack index and get the element.
+          // This handles the case where a Pack{T} from a for-loop iteration
+          // variable needs to be passed to a closure expecting T.
+          auto formalPackType = CanPackType::get(SGF.getASTContext(),
+                                                 sourceSILPackType->getElementTypes());
+          auto packIndex = SGF.B.createScalarPackIndex(loc, 0, formalPackType);
+          auto eltAddr = SGF.B.createPackElementGet(loc, packIndex, mv.getValue(),
+                                                    argType);
+          mv = ManagedValue::forBorrowedAddressRValue(eltAddr);
+        } else if ((sourceHasLocalArchetype || origIsPackExpansion) &&
+            !argType.hasLocalArchetype() &&
+            !isFunctionType) {
+          if (argType.isAddress()) {
+            mv = SGF.B.createUncheckedAddrCast(loc, mv, argType);
+          } else {
+            mv = SGF.B.createUncheckedBitCast(loc, mv, argType);
+          }
+        } else {
+          // Reabstract the value if necessary.
+          mv = SGF.emitOrigToSubstValue(loc, mv.ensurePlusOne(SGF, loc), orig, t);
+        }
       }
     }
 
