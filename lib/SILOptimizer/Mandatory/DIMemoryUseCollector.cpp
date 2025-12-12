@@ -84,12 +84,12 @@ static unsigned getElementCountRec(TypeExpansionContext context,
   // If this is a tuple, it is usually recursively flattened.
   if (CanTupleType TT = T.getAs<TupleType>()) {
     assert(!IsSelfOfNonDelegatingInitializer && "self never has tuple type");
-    // Don't flatten tuples containing pack expansions - they have a dynamic
-    // number of elements that cannot be statically enumerated.
-    if (TT->containsPackExpansionType())
+    // Tuples with dynamic element count cannot be statically enumerated.
+    auto staticCount = TT->getStaticElementCount();
+    if (!staticCount)
       return 1;
     unsigned NumElements = 0;
-    for (unsigned i = 0, e = TT->getNumElements(); i < e; ++i)
+    for (unsigned i = 0, e = *staticCount; i < e; ++i)
       NumElements +=
           getElementCountRec(context, Module, T.getTupleElementType(i), false);
     return NumElements;
@@ -220,12 +220,13 @@ static SILType getElementTypeRec(TypeExpansionContext context,
   // If this is a tuple type, walk into it.
   if (CanTupleType TT = T.getAs<TupleType>()) {
     assert(!IsSelfOfNonDelegatingInitializer && "self never has tuple type");
-    // Tuples containing pack expansions are treated as single elements.
-    if (TT->containsPackExpansionType()) {
-      assert(EltNo == 0 && "pack expansion tuple should be single element");
+    // Tuples with dynamic element count are treated as single elements.
+    auto staticCount = TT->getStaticElementCount();
+    if (!staticCount) {
+      assert(EltNo == 0 && "dynamic element count tuple should be single element");
       return T;
     }
-    for (unsigned i = 0, e = TT->getNumElements(); i < e; ++i) {
+    for (unsigned i = 0, e = *staticCount; i < e; ++i) {
       auto FieldType = T.getTupleElementType(i);
       unsigned NumFieldElements =
           getElementCountRec(context, Module, FieldType, false);
@@ -318,16 +319,16 @@ SILValue DIMemoryObjectInfo::emitElementAddressForDestroy(
     if (CanTupleType TT = PointeeType.getAs<TupleType>()) {
       assert(!IsSelf && "self never has tuple type");
 
-      // Tuples containing pack expansions are treated as single elements
-      // since they have a dynamic number of elements.
-      if (TT->containsPackExpansionType()) {
-        assert(EltNo == 0 && "pack expansion tuple should be single element");
+      // Tuples with dynamic element count are treated as single elements.
+      auto staticCount = TT->getStaticElementCount();
+      if (!staticCount) {
+        assert(EltNo == 0 && "dynamic element count tuple should be single element");
         return Ptr;
       }
 
       // Figure out which field we're walking into.
       unsigned FieldNo = 0;
-      for (unsigned i = 0, e = TT->getNumElements(); i < e; ++i) {
+      for (unsigned i = 0, e = *staticCount; i < e; ++i) {
         auto EltTy = PointeeType.getTupleElementType(i);
         unsigned NumSubElt = getElementCountRec(
             TypeExpansionContext(B.getFunction()), Module, EltTy, false);
@@ -427,14 +428,15 @@ static void getPathStringToElementRec(TypeExpansionContext context,
     return;
   }
 
-  // Tuples containing pack expansions are treated as single elements.
-  if (TT->containsPackExpansionType()) {
-    assert(EltNo == 0 && "pack expansion tuple should be single element");
+  // Tuples with dynamic element count are treated as single elements.
+  auto staticCount = TT->getStaticElementCount();
+  if (!staticCount) {
+    assert(EltNo == 0 && "dynamic element count tuple should be single element");
     return;
   }
 
   unsigned FieldNo = 0;
-  for (unsigned i = 0, e = TT->getNumElements(); i < e; ++i) {
+  for (unsigned i = 0, e = *staticCount; i < e; ++i) {
     auto Field = TT->getElement(i);
     SILType FieldTy = T.getTupleElementType(i);
     unsigned NumFieldElements =

@@ -56,8 +56,9 @@ unsigned RValue::getRValueSize(AbstractionPattern pattern, CanType formalType) {
 /// Return the number of rvalue elements in the given canonical type.
 unsigned RValue::getRValueSize(CanType type) {
   if (auto tupleType = dyn_cast<TupleType>(type)) {
-    // Don't recursively expand tuples containing pack expansions.
-    if (tupleType.containsPackExpansionType())
+    // Tuples with pack expansions have dynamic element count - treat as single value.
+    auto staticCount = tupleType.getStaticElementCount();
+    if (!staticCount)
       return 1;
 
     unsigned count = 0;
@@ -155,8 +156,8 @@ public:
   }
 
   void visitTupleType(CanTupleType tupleFormalType, ManagedValue tuple) {
-    // Don't recursively expand tuples containing pack expansions.
-    if (tupleFormalType.containsPackExpansionType())
+    // Tuples with pack expansions have dynamic element count - don't explode.
+    if (!tupleFormalType.getStaticElementCount())
       return visitType(tupleFormalType, tuple);
 
     if (tuple.getType().isObject()) {
@@ -205,8 +206,8 @@ public:
   }
 
   ManagedValue visitTupleType(CanTupleType t, SILLocation l) {
-    // Tuples with pack expansions aren't exploded.
-    if (t.containsPackExpansionType())
+    // Tuples with pack expansions have dynamic element count - don't implode.
+    if (!t.getStaticElementCount())
       return visitType(t, l);
 
     SmallVector<ManagedValue, 4> elts;
@@ -258,15 +259,16 @@ public:
   }
 
   void visitTupleType(CanTupleType t, Initialization *address, SILLocation l) {
-    // Tuples containing pack expansions shouldn't be exploded.
-    if (t.containsPackExpansionType())
+    // Tuples with pack expansions have dynamic element count - don't explode.
+    auto staticCount = t.getStaticElementCount();
+    if (!staticCount)
       return visitType(t, address, l);
 
     assert(address->canSplitIntoTupleElements());
     llvm::SmallVector<InitializationPtr, 4> buf;
     auto bufResult = address->splitIntoTupleElements(SGF, l, t, buf);
 
-    for (unsigned i : range(t->getNumElements())) {
+    for (unsigned i : range(*staticCount)) {
       CanType fieldCanTy = t.getElementType(i);
       this->visit(fieldCanTy, bufResult[i].get(), l);
     }
@@ -285,9 +287,9 @@ template <ImplodeKind KIND>
 static ManagedValue implodeTupleValues(ArrayRef<ManagedValue> values,
                                        SILGenFunction &SGF, CanType type,
                                        SILLocation l) {
-  // Non-tuples don't need to be imploded.
+  // Non-tuples and tuples with dynamic element count don't need to be imploded.
   auto tupleType = dyn_cast<TupleType>(type);
-  if (!tupleType || tupleType.containsPackExpansionType()) {
+  if (!tupleType || !tupleType.getStaticElementCount()) {
     assert(values.size() == 1 && "exploded non-tuple value?!");
     return ImplodeLoadableTupleValue<KIND>::getValue(SGF, values[0], l);
   }
@@ -331,9 +333,9 @@ static void copyOrInitValuesInto(Initialization *init,
                 KIND == ImplodeKind::Copy, "Not handled by init");
   bool isInit = (KIND == ImplodeKind::Forward);
 
-  // If the element has non-tuple type, just serve it up to the initialization.
+  // If the element has non-tuple type or dynamic element count, just serve it up.
   auto tupleType = dyn_cast<TupleType>(type);
-  if (!tupleType || tupleType.containsPackExpansionType()) {
+  if (!tupleType || !tupleType.getStaticElementCount()) {
     // We take the first value.
     ManagedValue result = values[0];
     values = values.slice(1);
@@ -385,10 +387,11 @@ LLVM_ATTRIBUTE_UNUSED
 static unsigned
 expectedExplosionSize(CanType type) {
   auto tuple = dyn_cast<TupleType>(type);
-  if (!tuple || tuple.containsPackExpansionType())
+  auto staticCount = tuple ? tuple.getStaticElementCount() : std::nullopt;
+  if (!staticCount)
     return 1;
   unsigned total = 0;
-  for (unsigned i = 0; i < tuple->getNumElements(); ++i) {
+  for (unsigned i = 0; i < *staticCount; ++i) {
     total += expectedExplosionSize(tuple.getElementType(i));
   }
   return total;
@@ -559,9 +562,9 @@ void RValue::assignInto(SILGenFunction &SGF, SILLocation loc,
 
   SWIFT_DEFER { assert(srcMvValues.empty() && "didn't claim all elements!"); };
 
-  // If we do not have a tuple, just bail early.
+  // If we do not have a tuple or it has dynamic element count, just bail early.
   auto srcTupleType = dyn_cast<TupleType>(type);
-  if (!srcTupleType || srcTupleType.containsPackExpansionType()) {
+  if (!srcTupleType || !srcTupleType.getStaticElementCount()) {
     // Otherwise, pull the front value off the list.
     auto srcValue = srcMvValues.front();
     srcMvValues = srcMvValues.slice(1);
@@ -672,9 +675,8 @@ RValue RValue::extractElement(unsigned n) && {
 
   // This is implementable, but we can do it lazily if we add that kind
   // of projection.
-  assert(!tupleTy.containsPackExpansionType() &&
-         "can't extract elements from tuples containing pack expansions "
-         "right now");
+  assert(tupleTy.getStaticElementCount() &&
+         "can't extract elements from tuples with dynamic element count");
 
   auto range = getElementRange(tupleTy, n);
   unsigned from = range.first, to = range.second;
@@ -702,9 +704,8 @@ void RValue::extractElements(SmallVectorImpl<RValue> &elements) && {
 
   // This is implementable, but we can do it lazily if we add that kind
   // of decomposition.
-  assert(!tupleTy.containsPackExpansionType() &&
-         "can't extract elements from tuples containing pack expansions "
-         "right now");
+  assert(tupleTy.getStaticElementCount() &&
+         "can't extract elements from tuples with dynamic element count");
 
   unsigned from = 0;
   for (auto eltType : tupleTy.getElementTypes()) {

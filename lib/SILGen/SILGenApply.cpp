@@ -3916,6 +3916,20 @@ private:
     }
 
     auto substType = arg.getSubstRValueType();
+
+    // If the substituted type contains pack expansions (e.g., we're in a
+    // generic context with type `(repeat each T)`), we can't statically
+    // decompose the tuple into individual arguments. Instead, emit the tuple
+    // as a single value and use dynamic pack iteration to expand it into
+    // the pack parameter.
+    if (auto substTupleType = dyn_cast<TupleType>(substType)) {
+      if (substTupleType.containsPackExpansionType()) {
+        emitExpandedPackExpansionTuple(std::move(arg), origParamType,
+                                       substTupleType);
+        return;
+      }
+    }
+
     bool doesTupleVanish = origParamType.doesTupleVanish();
 
     ArgumentSourceExpansion expander(SGF, std::move(arg), doesTupleVanish);
@@ -3940,6 +3954,83 @@ private:
       }
       emitPackArg(packEltSources, origElt.getOrigType());
     });
+  }
+
+  /// Emit an argument that is a tuple containing pack expansions.
+  /// This handles the case where we're in a generic context and the tuple
+  /// type still contains pack expansion types (e.g., `(repeat each T)`).
+  void emitExpandedPackExpansionTuple(ArgumentSource &&arg,
+                                      AbstractionPattern origParamType,
+                                      CanTupleType substTupleType) {
+    // Emit the tuple as a single value.
+    auto loc = arg.getLocation();
+    ManagedValue tupleValue = std::move(arg).getAsSingleValue(SGF);
+
+    // Adjust for the foreign error or async argument if necessary.
+    maybeEmitForeignArgument();
+
+    // Claim the pack parameter.
+    auto paramSlice = claimNextParameters(1);
+    SILParameterInfo param = paramSlice.front();
+    assert(param.isPack() && "expected pack parameter for pack expansion tuple");
+    auto packTy = cast<SILPackType>(param.getInterfaceType());
+
+    // Allocate a pack to hold the expanded tuple elements.
+    auto pack = SGF.emitTemporaryPackAllocation(loc,
+                                    SILType::getPrimitiveObjectType(packTy));
+
+    // Get the formal pack type from the tuple's element types.
+    // For a tuple like (repeat each T), this creates Pack{repeat each T}.
+    SmallVector<CanType, 4> packElts;
+    for (auto elt : substTupleType.getElementTypes()) {
+      packElts.push_back(elt);
+    }
+    auto formalPackType = CanPackType::get(SGF.getASTContext(), packElts);
+
+    // For each pack expansion element in the tuple, we need to emit a dynamic
+    // loop that projects elements from the tuple into the pack.
+    // For now, we only support the simple case of a single pack expansion.
+    assert(substTupleType->getNumElements() == 1 &&
+           "only single pack expansion tuples are currently supported");
+    auto expansionType = substTupleType.getElementType(0);
+    assert(isa<PackExpansionType>(expansionType) &&
+           "expected pack expansion type");
+
+    // Get the lowered pack expansion type from the SIL pack type.
+    SILType packExpansionTy = packTy->getSILElementType(0);
+
+    // Create an opened element environment for the pack expansion.
+    // This maps the pack archetypes to element archetypes for use in the loop.
+    SILType eltTy;
+    auto openedElementEnv = SGF.createOpenedElementValueEnvironment(
+        {packExpansionTy}, {&eltTy});
+
+    SGF.emitDynamicPackLoop(loc, formalPackType, /*component index*/ 0,
+                            openedElementEnv,
+                            /*before control flow*/ []() -> SILBasicBlock * { return nullptr; },
+                            [&](SILValue indexWithinComponent,
+                                SILValue packExpansionIndex,
+                                SILValue packIndex) {
+      // Project the element from the tuple.
+      auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
+          loc, packExpansionIndex, tupleValue.getValue(), eltTy);
+
+      // Project the element address in the pack.
+      auto packEltAddr = SGF.B.createPackElementGet(
+          loc, packIndex, pack, eltTy);
+
+      // Copy the value from the tuple element to the pack element.
+      SGF.B.createCopyAddr(loc, tupleEltAddr, packEltAddr,
+                           IsNotTake, IsInitialization);
+    });
+
+    bool consumed = param.getConvention() == ParameterConvention::Pack_Owned;
+    if (!consumed) {
+      Args.push_back(ManagedValue::forBorrowedAddressRValue(pack));
+    } else {
+      auto packCleanup = SGF.enterDestroyPackCleanup(pack, formalPackType);
+      Args.push_back(ManagedValue::forOwnedAddressRValue(pack, packCleanup));
+    }
   }
 
   void emitIndirect(ArgumentSource &&arg,
