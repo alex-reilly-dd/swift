@@ -23,3 +23,28 @@ struct FuzzEngine<each Input> {
         }
     }
 }
+
+// Test case 3: Single-element pack with closure
+// This tests the specific case where the closure's parameter is a single-element
+// pack expansion tuple that vanishes after substitution (e.g., FuzzEngine<Bool>).
+// The closure receives a pack parameter in the lowered representation, but the
+// formal parameter appears as a scalar after the tuple vanishes.
+func testSingleElementPack() throws {
+    let engine = FuzzEngine<Bool>()
+    try engine.run(inputs: []) { _ in }
+}
+
+// Test case 4: Closure with function type parameter
+// This tests that closures with function type parameters still work correctly.
+// This is a regression test to ensure the pack handling fix doesn't incorrectly
+// apply unchecked casts to function types, which require proper reabstraction.
+func withFunctionClosure(_ body: (UnsafeMutablePointer<Int>) -> Void) {
+    var x = 0
+    body(&x)
+}
+
+func testFunctionTypeParameter() {
+    withFunctionClosure { ptr in
+        ptr.pointee = 42
+    }
+}

@@ -644,7 +644,24 @@ ManagedValue Transform::transform(ManagedValue v,
       } else if (inputSubstType->isSet()) {
         fn = SGF.SGM.getSetUpCast(Loc);
       } else {
-        llvm::report_fatal_error("unsupported collection upcast kind");
+        // For non-collection structs with the same declaration, the types
+        // may differ only due to archetype context (e.g., pack element
+        // archetypes). Since they have the same declaration, they have
+        // the same memory layout and we can use an unchecked cast.
+        // Make sure we use the right cast based on the value category.
+        if (v.getType().isAddress() && loweredResultTy.isAddress())
+          return SGF.B.createUncheckedAddrCast(Loc, v, loweredResultTy);
+        if (!v.getType().isAddress() && !loweredResultTy.isAddress())
+          return SGF.B.createUncheckedBitCast(Loc, v, loweredResultTy);
+        // If the categories don't match, we need to load or store.
+        // This shouldn't typically happen for same-declaration structs,
+        // but handle it gracefully.
+        if (v.getType().isAddress()) {
+          // Load the value and then cast
+          auto &tl = SGF.getTypeLowering(v.getType());
+          v = emitManagedLoad(SGF, Loc, v, tl);
+        }
+        return SGF.B.createUncheckedBitCast(Loc, v, loweredResultTy);
       }
 
       return SGF.emitCollectionConversion(Loc, fn, inputSubstType,

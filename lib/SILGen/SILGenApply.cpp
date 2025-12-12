@@ -4015,13 +4015,10 @@ private:
       auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
           loc, packExpansionIndex, tupleValue.getValue(), eltTy);
 
-      // Project the element address in the pack.
-      auto packEltAddr = SGF.B.createPackElementGet(
-          loc, packIndex, pack, eltTy);
-
-      // Copy the value from the tuple element to the pack element.
-      SGF.B.createCopyAddr(loc, tupleEltAddr, packEltAddr,
-                           IsNotTake, IsInitialization);
+      // Store the tuple element address into the pack.
+      // The pack is an indirect pack (array of pointers), so we use
+      // pack_element_set to store the address of each tuple element.
+      SGF.B.createPackElementSet(loc, tupleEltAddr, packIndex, pack);
     });
 
     bool consumed = param.getConvention() == ParameterConvention::Pack_Owned;
