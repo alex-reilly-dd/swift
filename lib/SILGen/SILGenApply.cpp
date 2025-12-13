@@ -4025,6 +4025,12 @@ private:
     if (!consumed) {
       Args.push_back(ManagedValue::forBorrowedAddressRValue(pack));
     } else {
+      // The pack points into the tuple's storage. When we transfer ownership
+      // of the pack elements to the callee, we must forward the tuple's cleanup
+      // to prevent a double-free: the callee will destroy the pack elements,
+      // so we shouldn't also destroy them via the tuple cleanup.
+      tupleValue.forward(SGF);
+
       auto packCleanup = SGF.enterDestroyPackCleanup(pack, formalPackType);
       Args.push_back(ManagedValue::forOwnedAddressRValue(pack, packCleanup));
     }
