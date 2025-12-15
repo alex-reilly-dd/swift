@@ -1832,9 +1832,9 @@ private:
     assert(outerOrigType.isTuple());
     assert(!outerOrigType.doesTupleVanish());
 
-    // We have to use an indirect pattern if the substituted types have
-    // dynamic element count (contain pack expansions).
-    if (!innerSubstType.getStaticElementCount()) {
+    // We have to use an indirect pattern if the substituted types contain
+    // pack expansions.
+    if (innerSubstType.containsPackExpansionType()) {
       auto innerTupleBuffer = SGF.emitTemporaryAllocation(Loc, loweredInnerTy);
       ParamInfo innerSlot(innerTupleBuffer, ParameterConvention::Indirect_In);
       auto innerTupleAddr =
@@ -1847,7 +1847,7 @@ private:
     // Otherwise, expand the outer tuple in parallel with the elements of
     // the inner tuple, generate the inner elements, and then form them into
     // a scalar tuple.
-    assert(outerSubstType.getStaticElementCount());
+    assert(!outerSubstType.containsPackExpansionType());
 
     SmallVector<ManagedValue, 4> innerEltMVs;
     TupleSubstElementGenerator innerElt(SGF.getASTContext(),
@@ -4765,10 +4765,10 @@ void ResultPlanner::planExpandedIntoDirect(AbstractionPattern innerOrigType,
 
   auto outerTupleTy = SGF.getSILType(outerResult, CanSILFunctionType());
 
-  // If the substituted tuples have dynamic element count (contain pack
-  // expansions), we need to use the indirect path for the tuple and then
-  // add a load operation, because we can't do pack loops on scalar tuples in SIL.
-  if (!innerSubstType->getStaticElementCount()) {
+  // If the substituted tuples contain pack expansions, we need to
+  // use the indirect path for the tuple and then add a load operation,
+  // because we can't do pack loops on scalar tuples in SIL.
+  if (innerSubstType->containsPackExpansionType()) {
     auto temporary =
       SGF.emitTemporaryAllocation(Loc, outerTupleTy.getObjectType());
     expandInnerTupleOuterIndirect(innerOrigType, innerSubstType,
@@ -5055,13 +5055,12 @@ void ResultPlanner::planExpandedFromDirect(AbstractionPattern innerOrigType,
 
   SILType innerResultTy = SGF.getSILType(innerResult, CanSILFunctionType());
 
-  // If the substituted tuples have dynamic element count (contain pack
-  // expansions), we need to store the direct type to a temporary and then
-  // plan as if the result was indirect, because we can't do pack loops in
-  // SIL on scalar tuples.
-  assert(!innerSubstType->getStaticElementCount() ==
-           !outerSubstType->getStaticElementCount());
-  if (!innerSubstType->getStaticElementCount()) {
+  // If the substituted tuples contain pack expansions, we need to store
+  // the direct type to a temporary and then plan as if the result was
+  // indirect, because we can't do pack loops in SIL on scalar tuples.
+  assert(innerSubstType->containsPackExpansionType() ==
+           outerSubstType->containsPackExpansionType());
+  if (innerSubstType->containsPackExpansionType()) {
     auto innerResultAddr =
       expandParallelTuplesInnerIndirect(innerOrigType, innerSubstType,
                                         outerOrigType, outerSubstType,
@@ -5250,11 +5249,11 @@ static void destructureAndReverseTuple(SILGenFunction &SGF,
                                        SILValue tupleValue,
                                     SmallVectorImpl<SILValue> &values) {
   auto tupleTy = tupleValue->getType().castTo<TupleType>();
-  auto staticCount = tupleTy->getStaticElementCount();
-  assert(staticCount && "cannot destructure a tuple with dynamic element count");
+  assert(!tupleTy->containsPackExpansionType() &&
+         "cannot destructure a tuple containing pack expansions");
 
   SGF.B.emitDestructureValueOperation(loc, tupleValue, values);
-  std::reverse(values.end() - *staticCount, values.end());
+  std::reverse(values.end() - tupleTy->getNumElements(), values.end());
 }
 
 SILValue ResultPlanner::execute(SILValue innerResult,
