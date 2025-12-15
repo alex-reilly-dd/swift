@@ -264,12 +264,6 @@ bool TupleType::containsPackExpansionType() const {
   return false;
 }
 
-std::optional<unsigned> TupleType::getStaticElementCount() const {
-  if (containsPackExpansionType())
-    return std::nullopt;
-  return getNumElements();
-}
-
 bool CanTupleType::containsPackExpansionTypeImpl(CanTupleType tuple) {
   for (auto eltType : tuple.getElementTypes()) {
     if (isa<PackExpansionType>(eltType))

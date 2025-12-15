@@ -304,7 +304,7 @@ bool ElementUseCollector::collectUses(SILValue Pointer) {
       if (UI->getOperandNumber() == StoreInst::Dest) {
         if (auto tupleType = PointeeType.getAs<TupleType>()) {
           if (!tupleType->isEqual(Module.getASTContext().TheEmptyTupleType) &&
-              tupleType->getStaticElementCount() &&
+              !tupleType->containsPackExpansionType() &&
               shouldScalarizeTuple) {
             UsesToScalarize.push_back(User);
             continue;
@@ -342,7 +342,7 @@ bool ElementUseCollector::collectUses(SILValue Pointer) {
       // have an access that crosses elements.
       if (auto tupleType = PointeeType.getAs<TupleType>()) {
         if (!tupleType->isEqual(Module.getASTContext().TheEmptyTupleType) &&
-            tupleType->getStaticElementCount() &&
+            !tupleType->containsPackExpansionType() &&
             shouldScalarizeTuple) {
           UsesToScalarize.push_back(CAI);
           continue;
