@@ -2796,10 +2796,10 @@ RValue RValueEmitter::visitTupleExpr(TupleExpr *E, SGFContext C) {
     }
   }
 
-  // If the tuple has dynamic element count (pack expansion in it), initialize
-  // an object in memory (and recurse; this pattern should reliably enter the
-  // above, though).
-  if (!type.getStaticElementCount()) {
+  // If the tuple has a pack expansion in it, initialize an object in
+  // memory (and recurse; this pattern should reliably enter the above,
+  // though).
+  if (type.containsPackExpansionType()) {
     auto &tupleTL = SGF.getTypeLowering(type);
     auto initialization = SGF.emitTemporary(E, tupleTL);
     {
@@ -2946,9 +2946,9 @@ RValue RValueEmitter::visitTupleElementExpr(TupleElementExpr *E,
   std::optional<CollectValueInitialization> collection;
 
   // If we have an initialization to emit into, or if we'd need to emit
-  // a tuple with dynamic element count, make a tuple initialization
+  // a tuple that contains pack expansions, make a tuple initialization
   // of it plus some black holes.
-  if (projectedEltInit || !tupleType->getStaticElementCount()) {
+  if (projectedEltInit || tupleType->containsPackExpansionType()) {
     TupleInitialization tupleInit(tupleType);
 
     auto projectedIndex = E->getFieldNumber();
