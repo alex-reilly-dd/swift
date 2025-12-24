@@ -426,12 +426,15 @@ template<typename Runtime>
 class TargetGenericEnvironment
     : public swift::ABI::TrailingObjects<TargetGenericEnvironment<Runtime>,
                uint16_t, GenericParamDescriptor,
-               TargetGenericRequirementDescriptor<Runtime>> {
+               TargetGenericRequirementDescriptor<Runtime>,
+               GenericPackShapeHeader,
+               GenericPackShapeDescriptor> {
   using GenericRequirementDescriptor =
     TargetGenericRequirementDescriptor<Runtime>;
   using TrailingObjects =
      swift::ABI::TrailingObjects<TargetGenericEnvironment<Runtime>,
-       uint16_t, GenericParamDescriptor, GenericRequirementDescriptor>;
+       uint16_t, GenericParamDescriptor, GenericRequirementDescriptor,
+       GenericPackShapeHeader, GenericPackShapeDescriptor>;
   friend TrailingObjects;
 
 #if !defined(_MSC_VER) || _MSC_VER >= 1920
@@ -452,6 +455,16 @@ class TargetGenericEnvironment
 
   size_t numTrailingObjects(OverloadToken<GenericRequirementDescriptor>) const {
     return Flags.getNumGenericRequirements();
+  }
+
+  size_t numTrailingObjects(OverloadToken<GenericPackShapeHeader>) const {
+    return Flags.hasPackShapeDescriptors() ? 1 : 0;
+  }
+
+  size_t numTrailingObjects(OverloadToken<GenericPackShapeDescriptor>) const {
+    return Flags.hasPackShapeDescriptors()
+      ? this->template getTrailingObjects<GenericPackShapeHeader>()->NumPacks
+      : 0;
   }
 
 #if defined(_MSC_VER) && _MSC_VER < 1920
@@ -479,6 +492,23 @@ public:
     return llvm::ArrayRef(
         this->template getTrailingObjects<GenericRequirementDescriptor>(),
         Flags.getNumGenericRequirements());
+  }
+
+  /// Retrieve the pack shape header, if present.
+  const GenericPackShapeHeader *getGenericPackShapeHeader() const {
+    if (!Flags.hasPackShapeDescriptors())
+      return nullptr;
+    return this->template getTrailingObjects<GenericPackShapeHeader>();
+  }
+
+  /// Retrieve the pack shape descriptors, if present.
+  llvm::ArrayRef<GenericPackShapeDescriptor> getGenericPackShapeDescriptors() const {
+    if (!Flags.hasPackShapeDescriptors())
+      return {};
+    auto header = this->template getTrailingObjects<GenericPackShapeHeader>();
+    return llvm::ArrayRef(
+        this->template getTrailingObjects<GenericPackShapeDescriptor>(),
+        header->NumPacks);
   }
 };
 
