@@ -2410,9 +2410,16 @@ class GenericEnvironmentFlags {
   uint32_t Value;
 
   enum : uint32_t {
+    // Bits 0-11: Number of generic parameter levels
     NumGenericParameterLevelsMask = 0xFFF,
+    // Bits 12-27: Number of generic requirements
     NumGenericRequirementsShift = 12,
-    NumGenericRequirementsMask = 0xFFFF << NumGenericRequirementsShift,
+    NumGenericRequirementsMask = 0xFFFFu << NumGenericRequirementsShift,
+    // Bit 28: Has pack shape descriptors (for parameter pack support)
+    // When set, GenericPackShapeHeader and GenericPackShapeDescriptor trail
+    // after the generic requirements.
+    HasPackShapeDescriptorsBit = 0x10000000u,
+    // Bits 29-31: Reserved for future use
   };
 
   constexpr explicit GenericEnvironmentFlags(uint32_t value) : Value(value) { }
@@ -2432,12 +2439,23 @@ public:
              | (numGenericRequirements << NumGenericRequirementsShift));
   }
 
+  constexpr GenericEnvironmentFlags
+  withHasPackShapeDescriptors(bool hasPackShapeDescriptors) const {
+    return GenericEnvironmentFlags(hasPackShapeDescriptors
+             ? (Value | HasPackShapeDescriptorsBit)
+             : (Value &~ HasPackShapeDescriptorsBit));
+  }
+
   constexpr unsigned getNumGenericParameterLevels() const {
     return Value & NumGenericParameterLevelsMask;
   }
 
   constexpr unsigned getNumGenericRequirements() const {
     return (Value & NumGenericRequirementsMask) >> NumGenericRequirementsShift;
+  }
+
+  constexpr bool hasPackShapeDescriptors() const {
+    return Value & HasPackShapeDescriptorsBit;
   }
 
   constexpr uint32_t getIntValue() const {

@@ -3417,7 +3417,10 @@ void SubstGenericParametersFromMetadata::setup() const {
   case SourceKind::Environment: {
     assert(environment);
     numKeyGenericParameters = buildEnvironmentPath(environment);
-    // FIXME: Variadic generics
+    // Read pack shape header if present in the environment
+    if (auto *packShapeHeader = environment->getGenericPackShapeHeader()) {
+      numShapeClasses = packShapeHeader->NumShapeClasses;
+    }
     return;
   }
   case SourceKind::Shape: {
