@@ -7826,6 +7826,20 @@ void IRGenSILFunction::visitFunctionExtractIsolationInst(
 }
 
 void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
+  // Key paths with parameter packs are not yet supported in IRGen.
+  // Check for this and emit a diagnostic instead of crashing.
+  if (auto sig = I->getPattern()->getGenericSignature()) {
+    if (sig->hasParameterPack()) {
+      IGM.unimplemented(I->getLoc().getSourceLoc(),
+                        "key paths with parameter packs");
+      // Set a placeholder value to allow compilation to continue.
+      Explosion e;
+      e.add(llvm::UndefValue::get(IGM.OpaquePtrTy));
+      setLoweredExplosion(I, e);
+      return;
+    }
+  }
+
   auto pattern = IGM.getAddrOfKeyPathPattern(I->getPattern(), I->getLoc());
   // Build up the argument vector to instantiate the pattern here.
   std::optional<StackAddress> dynamicArgsBuf;
