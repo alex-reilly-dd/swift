@@ -4631,15 +4631,11 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
         SmallVector<InverseRequirement, 2> inverses;
         signature->getRequirementsWithInverses(reqs, inverses);
 
-        auto flags = GenericEnvironmentFlags()
-          .withNumGenericParameterLevels(genericParamCounts.size())
-          .withNumGenericRequirements(reqs.size());
-
         ConstantStructBuilder fields = builder.beginStruct();
         fields.setPacked(true);
 
-        // Flags
-        fields.addInt32(flags.getIntValue());
+        // We'll fill in the flags after we know if there are packs.
+        auto flagsPlaceholder = fields.addPlaceholderWithSize(Int32Ty);
 
         // Parameter counts.
         for (auto count : genericParamCounts) {
@@ -4651,8 +4647,6 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
             irgen::addGenericParameters(*this, fields, signature, /*implicit=*/false);
         assert(metadata.NumParamsEmitted == metadata.NumParams &&
                "Implicit GenericParamDescriptors not supported here");
-        assert(metadata.GenericPackArguments.empty() &&
-               "We don't support packs here yet");
 
         // Need to pad the structure after generic parameters
         // up to four bytes because generic requirements that
@@ -4661,6 +4655,31 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
 
         // Generic requirements
         irgen::addGenericRequirements(*this, fields, signature, reqs, inverses);
+
+        // Note: ShapeClasses are already populated by addGenericParameters()
+        // for each pack parameter, so we don't need to collect them again here.
+
+        // Emit pack shape header and descriptors if there are packs.
+        bool hasPacks = !metadata.GenericPackArguments.empty();
+        if (hasPacks) {
+          // GenericPackShapeHeader
+          fields.addInt16(metadata.GenericPackArguments.size()); // NumPacks
+          fields.addInt16(metadata.ShapeClasses.size()); // NumShapeClasses
+
+          // GenericPackShapeDescriptors
+          irgen::addGenericPackShapeDescriptors(
+              *this, fields, metadata.ShapeClasses,
+              metadata.GenericPackArguments);
+        }
+
+        // Now fill in the flags.
+        auto flags = GenericEnvironmentFlags()
+          .withNumGenericParameterLevels(genericParamCounts.size())
+          .withNumGenericRequirements(reqs.size())
+          .withHasPackShapeDescriptors(hasPacks);
+        fields.fillPlaceholderWithInt(flagsPlaceholder, Int32Ty,
+                                      flags.getIntValue());
+
         return fields.finishAndCreateFuture();
       });
 }
