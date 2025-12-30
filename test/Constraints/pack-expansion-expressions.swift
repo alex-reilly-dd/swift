@@ -476,6 +476,15 @@ do {
   }
 }
 
+// Pack element type reference inside closure body within pack expansion.
+// The type repr is resolved during pack expansion constraint generation
+// while OuterExpansions is still set up.
+do {
+  func test<each U>(x: repeat each U) -> (repeat each U) {
+    return (repeat { 1 as! each U }()) // Ok - type repr resolved during pack expansion processing
+  }
+}
+
 // rdar://108904190 - top-level 'repeat' not allowed in single-expression closures
 func test_pack_expansion_to_void_conv_for_closure_result<each T>(x: repeat each T) {
   let _: () -> Void = { repeat print(each x) } // Ok

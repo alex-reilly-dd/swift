@@ -3310,7 +3310,8 @@ namespace {
 
     Type visitPackExpansionExpr(PackExpansionExpr *expr) {
       assert(OuterExpansions.back() == expr);
-      OuterExpansions.pop_back();
+      // Delay popping until the end - we may need OuterExpansions to resolve
+      // type reprs that are inside closures (whose bodies are deferred).
 
       auto expansionType = CS.getType(expr)->castTo<PackExpansionType>();
       auto elementResultType = CS.getType(expr->getPatternExpr());
@@ -3341,8 +3342,19 @@ namespace {
           // OpenPackElementType sets types for 'each T' type reprs in
           // expressions. Some invalid code won't make it there, and
           // the constraint system won't have recorded a type.
-          if (!CS.hasType(elementType->getPackType()))
-            return Type();
+          // Type reprs inside closure bodies also won't have types yet
+          // because closure bodies are deferred - resolve them now while
+          // we still have OuterExpansions set up.
+          if (!CS.hasType(elementType->getPackType())) {
+            auto resolvedType = resolveTypeReferenceInExpression(
+                elementType, TypeResolverContext::InExpression,
+                CS.getConstraintLocator(expr));
+            if (!resolvedType || resolvedType->hasError())
+              continue;
+            // After resolution, the pack type should be recorded
+            if (!CS.hasType(elementType->getPackType()))
+              continue;
+          }
 
           packType = CS.getType(elementType->getPackType());
         } else {
@@ -3360,6 +3372,7 @@ namespace {
             CS.getConstraintLocator(expr, ConstraintLocator::PackShape));
       }
 
+      OuterExpansions.pop_back();
       return expansionType;
     }
 
