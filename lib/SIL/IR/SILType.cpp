@@ -470,8 +470,33 @@ SILType SILType::getEnumElementType(EnumElementDecl *elt, TypeConverter &TC,
 
   auto substEltTy = getASTType()->getTypeOfMember(
       elt, elt->getPayloadInterfaceType());
+
+  // If the payload interface type is a bare PackExpansionType (unlabeled pack
+  // parameter), wrap the substituted type in a single-element tuple to match
+  // the abstraction pattern. This is consistent with what getAbstractionPattern
+  // does.
+  //
+  // For generic types, substEltTy is PackExpansionType - wrap in a tuple.
+  // For concrete types, substEltTy is PackType - convert to a tuple by
+  // expanding the pack's elements.
+  if (elt->getPayloadInterfaceType()->is<PackExpansionType>()) {
+    if (substEltTy->is<PackExpansionType>()) {
+      // Generic case: wrap the pack expansion in a tuple
+      substEltTy = TupleType::get({TupleTypeElt(substEltTy)},
+                                  elt->getASTContext())->getCanonicalType();
+    } else if (auto packTy = substEltTy->getAs<PackType>()) {
+      // Concrete case: expand the pack's elements into a tuple
+      SmallVector<TupleTypeElt, 4> tupleElts;
+      for (auto eltTy : packTy->getElementTypes()) {
+        tupleElts.push_back(TupleTypeElt(eltTy));
+      }
+      substEltTy = TupleType::get(tupleElts,
+                                  elt->getASTContext())->getCanonicalType();
+    }
+  }
+
   auto loweredTy = TC.getLoweredRValueType(
-      context, TC.getAbstractionPattern(elt), substEltTy);
+      context, origEltType, substEltTy);
 
   return SILType(loweredTy, getCategory()).copyingMoveOnlyWrapper(*this);
 }

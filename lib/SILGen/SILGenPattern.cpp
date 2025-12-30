@@ -1376,6 +1376,21 @@ void PatternMatchEmission::bindVariable(Pattern *pattern, VarDecl *var,
   // a var box in the final shared case block.
   bool immutable = var->isLet() || hasMultipleItems;
 
+  // For pack expansion types stored in tuples, we need special handling.
+  // The variable type is a pack expansion (repeat each T), but the value
+  // is the containing tuple address. We store the tuple address in VarLocs
+  // directly, and the access code in visitPackElementExpr will use
+  // tuple_pack_element_addr to access individual elements.
+  auto varType = var->getTypeInContext()->getCanonicalType();
+  if (isa<PackExpansionType>(varType)) {
+    auto mv = value.getFinalManagedValue();
+    // Store the tuple address directly - element access will be handled
+    // by visitPackElementExpr using tuple_pack_element_addr.
+    SGF.VarLocs[var] = SILGenFunction::VarLoc(mv.getValue(),
+                                               SILAccessEnforcement::Unknown);
+    return;
+  }
+
   // Initialize the variable value.
   InitializationPtr init = SGF.emitInitializationForVarDecl(var, immutable);
 
@@ -1756,11 +1771,39 @@ emitTupleDispatch(ArrayRef<RowToSpecialize> rows, ConsumableManagedValue src,
 
   // Break down the values.
   auto tupleSILTy = v->getType();
-  for (unsigned i : range(tupleSILTy.castTo<TupleType>()->getNumElements())) {
+  auto tupleTy = tupleSILTy.castTo<TupleType>();
+
+  // Check if this tuple contains pack expansions.
+  bool containsPackExpansion = tupleTy.containsPackExpansionType();
+  CanPackType formalPackType;
+  if (containsPackExpansion)
+    formalPackType = tupleTy.getInducedPackType();
+
+  CleanupCloner cloner(SGF, src.getFinalManagedValue());
+
+  for (unsigned i : range(tupleTy->getNumElements())) {
     SILType fieldTy = tupleSILTy.getTupleElementType(i);
     auto &fieldTL = SGF.getTypeLowering(fieldTy);
 
-    SILValue member = SGF.B.createTupleElementAddr(loc, v, i, fieldTy);
+    // Handle pack expansion elements specially - they cannot be individually
+    // addressed and need to keep a reference to the whole tuple.
+    if (containsPackExpansion && fieldTy.is<PackExpansionType>()) {
+      // For pack expansion elements, bind to the whole tuple with special cleanup.
+      auto memberMV = cloner.cloneForTuplePackExpansionComponent(v, formalPackType, i);
+      auto memberCMV = ConsumableManagedValue::forOwned(memberMV);
+      subPatternArgs.push_back(memberCMV);
+      unforwardArgs.push_back(memberCMV);
+      continue;
+    }
+
+    SILValue member;
+    if (containsPackExpansion) {
+      // For scalar elements in tuples with pack expansions, use pack indexing.
+      auto packIndex = SGF.B.createScalarPackIndex(loc, i, formalPackType);
+      member = SGF.B.createTuplePackElementAddr(loc, packIndex, v, fieldTy);
+    } else {
+      member = SGF.B.createTupleElementAddr(loc, v, i, fieldTy);
+    }
     // Inline constructor.
     auto memberCMV = ([&]() -> ConsumableManagedValue {
       if (!fieldTL.isLoadable()) {
@@ -2475,6 +2518,27 @@ void PatternMatchEmission::emitEnumElementDispatch(
                                     eltDecl->getPayloadInterfaceType())
                   ->getCanonicalType();
 
+      // If the payload interface type is a bare PackExpansionType (unlabeled
+      // pack parameter), adjust the substituted type to match the SIL tuple
+      // representation (matching what getEnumElementType does).
+      //
+      // For generic types, substEltTy is PackExpansionType - wrap in a tuple.
+      // For concrete types, substEltTy is PackType - convert to a tuple by
+      // expanding the pack's elements.
+      if (eltDecl->getPayloadInterfaceType()->is<PackExpansionType>()) {
+        if (isa<PackExpansionType>(substEltTy)) {
+          substEltTy = TupleType::get({TupleTypeElt(substEltTy)},
+                                      SGF.getASTContext())->getCanonicalType();
+        } else if (auto packTy = substEltTy->getAs<PackType>()) {
+          SmallVector<TupleTypeElt, 4> tupleElts;
+          for (auto eltTy : packTy->getElementTypes()) {
+            tupleElts.push_back(TupleTypeElt(eltTy));
+          }
+          substEltTy = TupleType::get(tupleElts,
+                                      SGF.getASTContext())->getCanonicalType();
+        }
+      }
+
       AbstractionPattern origEltTy =
           (eltDecl->getParentEnum()->isOptionalDecl()
                ? AbstractionPattern(substEltTy)
@@ -2661,7 +2725,7 @@ void PatternMatchEmission::emitDestructiveCaseBlocks() {
       // Destructure the tuple and bind its components.
       if (mv.getType().isObject()) {
         auto destructure = SGF.B.createDestructureTuple(p, mv.forward(SGF));
-        
+
         for (unsigned i = 0, e = p->getNumElements(); i < e; ++i) {
           auto elementVal = destructure->getAllResults()[i];
           visit(p->getElement(i).getPattern(),
@@ -2669,8 +2733,36 @@ void PatternMatchEmission::emitDestructiveCaseBlocks() {
         }
       } else {
         auto baseAddr = mv.forward(emission.SGF);
+        auto tupleTy = baseAddr->getType().castTo<TupleType>();
+
+        // Check if this tuple contains pack expansions.
+        bool containsPackExpansion = tupleTy.containsPackExpansionType();
+        CanPackType formalPackType;
+        if (containsPackExpansion)
+          formalPackType = tupleTy.getInducedPackType();
+
+        CleanupCloner cloner(SGF, mv);
+
         for (unsigned i = 0, e = p->getNumElements(); i < e; ++i) {
-          SILValue element = SGF.B.createTupleElementAddr(p, baseAddr, i);
+          SILType fieldTy = baseAddr->getType().getTupleElementType(i);
+
+          // Handle pack expansion elements specially.
+          if (containsPackExpansion && fieldTy.is<PackExpansionType>()) {
+            auto elementMV = cloner.cloneForTuplePackExpansionComponent(
+                baseAddr, formalPackType, i);
+            visit(p->getElement(i).getPattern(), elementMV);
+            continue;
+          }
+
+          SILValue element;
+          if (containsPackExpansion) {
+            auto packIndex = SGF.B.createScalarPackIndex(p, i, formalPackType);
+            element = SGF.B.createTuplePackElementAddr(p, packIndex, baseAddr,
+                                                        fieldTy);
+          } else {
+            element = SGF.B.createTupleElementAddr(p, baseAddr, i);
+          }
+
           if (element->getType().isLoadable(SGF.F)) {
             element = SGF.B.createLoad(p, element, LoadOwnershipQualifier::Take);
           }

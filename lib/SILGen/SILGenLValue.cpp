@@ -3925,8 +3925,14 @@ LValue SILGenLValue::visitPackElementExpr(PackElementExpr *e,
                                       accessKind)
            .getLValueAddress();
       auto packIndex = SGF.getInnermostPackExpansion()->ExpansionIndex;
-      auto elementAddr =
-        SGF.B.createPackElementGet(e, packIndex, packAddr, elementTy);
+      // Use the appropriate instruction based on whether this is a SILPackType
+      // or a tuple containing a pack expansion (e.g., from enum pattern matching).
+      SILValue elementAddr;
+      if (packAddr->getType().is<SILPackType>()) {
+        elementAddr = SGF.B.createPackElementGet(e, packIndex, packAddr, elementTy);
+      } else {
+        elementAddr = SGF.B.createTuplePackElementAddr(e, packIndex, packAddr, elementTy);
+      }
       return LValue::forAddress(
           accessKind, ManagedValue::forLValue(elementAddr),
           /*access enforcement*/ std::nullopt, origFormalType, substFormalType);

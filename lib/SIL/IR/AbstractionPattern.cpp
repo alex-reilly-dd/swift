@@ -124,6 +124,14 @@ AbstractionPattern TypeConverter::getAbstractionPattern(EnumElementDecl *decl) {
                  .getCanonicalSignature();
   auto type = sig.getReducedType(decl->getPayloadInterfaceType());
 
+  // If the payload is a bare PackExpansionType (unlabeled pack parameter),
+  // wrap it in a single-element tuple to match the storage representation.
+  // This is consistent with what getEnumElementType does.
+  if (type->is<PackExpansionType>()) {
+    type = TupleType::get({TupleTypeElt(type)},
+                          decl->getASTContext())->getCanonicalType();
+  }
+
   return AbstractionPattern(sig, type);
 }
 

@@ -6679,14 +6679,38 @@ static bool isEnumElementPayloadTupled(EnumElementDecl *element,
                                        CanTupleType &formalPayloadTupleType) {
   auto params = element->getParameterList();
   assert(params);
-  assert(payloads.size() == params->size());
+
+  // Check if this enum element has a pack parameter. For pack params, the
+  // payloads array contains the expanded pack elements rather than matching
+  // the parameter count 1:1.
+  bool hasPackParam = false;
+  if (params->size() == 1) {
+    auto paramType = params->get(0)->getInterfaceType();
+    // Check for bare pack expansion (unlabeled) or tuple containing pack expansion (labeled)
+    if (paramType->is<PackExpansionType>()) {
+      hasPackParam = true;
+    } else if (auto tupleTy = paramType->getAs<TupleType>()) {
+      hasPackParam = tupleTy->containsPackExpansionType();
+    }
+  }
+
+  if (!hasPackParam) {
+    assert(payloads.size() == params->size());
+    if (payloads.size() == 1 && params->get(0)->getArgumentName().empty())
+      return false;
+  }
+
+  // For unlabeled single payload (non-pack) or unlabeled pack with single element
   if (payloads.size() == 1 && params->get(0)->getArgumentName().empty())
     return false;
 
   SmallVector<TupleTypeElt, 8> tupleElts;
+  Identifier label = params->get(0)->getArgumentName();
   for (auto i : indices(payloads)) {
-    tupleElts.push_back({payloads[i].getSubstRValueType(),
-                         params->get(0)->getArgumentName()});
+    // For labeled pack params, use the label for the first element only
+    // to match how tuples with pack expansions work
+    Identifier eltLabel = (i == 0) ? label : Identifier();
+    tupleElts.push_back({payloads[i].getSubstRValueType(), eltLabel});
   }
   formalPayloadTupleType = cast<TupleType>(
     CanType(TupleType::get(tupleElts, element->getASTContext())));
@@ -6707,6 +6731,32 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
   auto treatAsTuple =
     isEnumElementPayloadTupled(element, eltPayloads, formalPayloadTupleType);
 
+  // Check if we have pack parameters - either labeled or unlabeled.
+  // For pack params, the abstraction pattern is a tuple with one pack expansion
+  // element, but the payloads/formalPayloadTupleType have the expanded elements.
+  bool isPackParam = element->getPayloadInterfaceType()->is<PackExpansionType>();
+  if (!isPackParam) {
+    if (auto tupleTy = element->getPayloadInterfaceType()->getAs<TupleType>()) {
+      isPackParam = tupleTy->containsPackExpansionType();
+    }
+  }
+
+  // Check if we have a single unlabeled pack expansion parameter.
+  // In this case, the SIL payload type has been wrapped in a single-element
+  // tuple by getEnumElementType (e.g., $(repeat each T)), even though the
+  // AST type is a bare pack expansion. We need to treat this as a tuple
+  // for initialization purposes to use the proper pack expansion infrastructure.
+  if (!treatAsTuple && eltPayloads.size() == 1) {
+    if (auto tupleTy = payloadTy.getAs<TupleType>()) {
+      if (tupleTy->getNumElements() == 1 &&
+          isa<PackExpansionType>(tupleTy.getElementType(0))) {
+        treatAsTuple = true;
+        // Use the SIL tuple type for splitting
+        formalPayloadTupleType = tupleTy;
+      }
+    }
+  }
+
   // The Initialization we get passed is always one of several cases in
   // emitInjectEnum, all of which are splittable.
   assert(!treatAsTuple || !dest || dest->canSplitIntoTupleElements());
@@ -6724,6 +6774,15 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
     elts.reserve(eltPayloads.size());
   }
 
+  // For pack parameters, get the pack expansion's pattern type to use for all elements.
+  // The origPayloadType is a tuple with one pack expansion element, so we need
+  // to extract the pattern type from within the expansion.
+  AbstractionPattern packEltOrigType = AbstractionPattern::getInvalid();
+  if (isPackParam && treatAsTuple) {
+    auto packExpansionOrigType = origPayloadType.getTupleElementType(0);
+    packEltOrigType = packExpansionOrigType.getPackExpansionPatternType();
+  }
+
   // Do an initial pass, emitting non-default arguments.
   SmallVector<unsigned, 4> delayedArgIndices;
   for (auto i : indices(eltPayloads)) {
@@ -6734,7 +6793,10 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
       continue;
     }
 
+    // Get the abstraction pattern for this element.
+    // For pack params, use the pack expansion's pattern for all elements.
     AbstractionPattern origEltType =
+      isPackParam ? packEltOrigType :
       (treatAsTuple ? origPayloadType.getTupleElementType(i) : origPayloadType);
     SILType eltTy =
       (treatAsTuple ? payloadTy.getTupleElementType(i) : payloadTy);
@@ -6752,7 +6814,9 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
   // Emit all of the default arguments in a separate pass.
   for (auto i : delayedArgIndices) {
     auto &eltPayload = eltPayloads[i];
-    AbstractionPattern  origEltType =
+    // For pack params, use the pack expansion's pattern for all elements.
+    AbstractionPattern origEltType =
+      isPackParam ? packEltOrigType :
       (treatAsTuple ? origPayloadType.getTupleElementType(i) : origPayloadType);
     SILType eltTy =
       (treatAsTuple ? payloadTy.getTupleElementType(i) : payloadTy);
