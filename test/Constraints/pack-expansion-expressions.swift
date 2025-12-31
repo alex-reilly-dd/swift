@@ -485,6 +485,80 @@ do {
   }
 }
 
+// Deferred initialization of pack tuple variables.
+// When a variable with type (repeat each T) is declared separately from its
+// initialization, the reference has lvalue type @lvalue (repeat each T).
+// This should still work when passed to struct initializers or functions.
+do {
+  struct Container<each T> {
+    let values: (repeat each T)
+  }
+
+  func takeTuple<each T>(_ values: (repeat each T)) {}
+
+  // Deferred init + return struct
+  func test1<each U>(_ args: repeat each U) -> Container<repeat each U> {
+    let values: (repeat each U)
+    values = (repeat each args)
+    return Container(values: values) // Ok
+  }
+
+  // Deferred init + pass to function
+  func test2<each U>(_ args: repeat each U) {
+    let values: (repeat each U)
+    values = (repeat each args)
+    takeTuple(values) // Ok
+  }
+
+  // Conditional deferred init
+  func test3<each U>(_ args: repeat each U) -> Container<repeat each U> {
+    let values: (repeat each U)
+    if Bool.random() {
+      values = (repeat each args)
+    } else {
+      values = (repeat each args)
+    }
+    return Container(values: values) // Ok
+  }
+
+  // Deferred init + return tuple directly
+  func test4<each U>(_ args: repeat each U) -> (repeat each U) {
+    let values: (repeat each U)
+    values = (repeat each args)
+    return values // Ok
+  }
+}
+
+// Array append with nested pack expansion tuple as field type.
+do {
+  struct Container<each T: Sendable>: Sendable {
+    var failures: [(input: (repeat each T), error: any Error)] = []
+
+    mutating func addFailure(input: (repeat each T), error: any Error) {
+      failures.append((input: input, error: error)) // Ok
+    }
+  }
+}
+
+// For-in loop with tuple destructuring over array containing pack expansion tuple.
+do {
+  struct Container<each T: Sendable>: Sendable {
+    var failures: [(input: (repeat each T), error: any Error)] = []
+
+    func report() {
+      for (input, error) in failures { // Ok
+        print(input, error)
+      }
+    }
+
+    func reportEnumerated() {
+      for (index, (input, error)) in failures.enumerated() { // Ok
+        print(index, input, error)
+      }
+    }
+  }
+}
+
 // rdar://108904190 - top-level 'repeat' not allowed in single-expression closures
 func test_pack_expansion_to_void_conv_for_closure_result<each T>(x: repeat each T) {
   let _: () -> Void = { repeat print(each x) } // Ok
