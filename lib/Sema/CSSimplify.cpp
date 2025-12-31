@@ -131,6 +131,16 @@ bool constraints::isPackExpansionType(Type type) {
   if (auto *typeVar = type->getAs<TypeVariableType>())
     return typeVar->getImpl().isPackExpansion();
 
+  // Check for lvalue wrapping a single-element pack expansion tuple.
+  // This handles deferred initialization where the variable has type
+  // @lvalue (repeat each T) - the tuple inside contains a pack expansion.
+  // We only do this for lvalue-wrapped types to avoid incorrectly treating
+  // (repeat each T) as a pack expansion when it appears as a field type
+  // within another tuple (e.g., in array append scenarios).
+  if (type->is<LValueType>()) {
+    return isSingleUnlabeledPackExpansionTuple(type);
+  }
+
   return false;
 }
 
@@ -8366,6 +8376,23 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         }
       }
     }
+  }
+
+  // Handle the case where one side is an lvalue wrapping a single-element
+  // pack expansion tuple and the other is a pack expansion. This occurs with
+  // deferred initialization of pack tuple variables:
+  //   let values: (repeat each U)
+  //   values = (repeat each args)
+  //   Container(values: values)  // 'values' is @lvalue (repeat each U)
+  // Here we match @lvalue (repeat each U) against repeat each T, which should
+  // succeed by unwrapping the lvalue and tuple to get the inner pack expansion.
+  if (isSingleUnlabeledPackExpansionTuple(type1) && type2->is<PackExpansionType>()) {
+    auto innerType = type1->getRValueType()->castTo<TupleType>()->getElementType(0);
+    return matchTypes(innerType, type2, kind, subflags, locator);
+  }
+  if (type1->is<PackExpansionType>() && isSingleUnlabeledPackExpansionTuple(type2)) {
+    auto innerType = type2->getRValueType()->castTo<TupleType>()->getElementType(0);
+    return matchTypes(type1, innerType, kind, subflags, locator);
   }
 
   // Matching types where one side is a pack expansion and the other is not
