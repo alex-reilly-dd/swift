@@ -6239,11 +6239,15 @@ bool ConstraintSystem::repairFailures(
             auto fnType = simplifyType(overload->adjustedOpenedType)
                               ->castTo<FunctionType>();
             auto paramIdx = argToParamElt->getParamIdx();
-            auto paramType = fnType->getParams()[paramIdx].getParameterType();
-            if (auto paramFnType = paramType->getAs<FunctionType>()) {
-              conversionsOrFixes.push_back(RemoveExtraneousArguments::create(
-                  *this, paramFnType, {}, loc));
-              break;
+            // Guard against out-of-bounds access when parameter index from
+            // one overload is used with a different overload during salvaging.
+            if (paramIdx < fnType->getNumParams()) {
+              auto paramType = fnType->getParams()[paramIdx].getParameterType();
+              if (auto paramFnType = paramType->getAs<FunctionType>()) {
+                conversionsOrFixes.push_back(RemoveExtraneousArguments::create(
+                    *this, paramFnType, {}, loc));
+                break;
+              }
             }
           }
         }
