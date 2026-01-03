@@ -559,6 +559,39 @@ do {
   }
 }
 
+// Overload resolution with pack generics and type mismatch should not crash.
+do {
+  struct Result<each Input>: Sendable {
+    let data: [(input: (repeat each Input), error: any Error)]
+  }
+
+  // Overload 1: with extra parameter
+  func process<each Input, each M>(
+    using mutators: repeat each M,
+    timeout: Duration = .seconds(60),
+    handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
+  ) async throws -> Result<repeat each Input> {
+    return Result(data: [])
+  }
+
+  // Overload 2: without extra parameter
+  func process<each Input>(
+    timeout: Duration = .seconds(60),
+    handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
+  ) async throws -> Result<repeat each Input> {
+    return Result(data: [])
+  }
+
+  // Type mismatch (Int vs Duration) with multiple pack closure params should diagnose, not crash.
+  func test() async throws {
+    let _ = try await process( // expected-error {{no exact matches in call to local function 'process'}}
+      timeout: 10
+    ) { (a: Int, b: Int) in
+      print(a, b)
+    }
+  }
+}
+
 // rdar://108904190 - top-level 'repeat' not allowed in single-expression closures
 func test_pack_expansion_to_void_conv_for_closure_result<each T>(x: repeat each T) {
   let _: () -> Void = { repeat print(each x) } // Ok
