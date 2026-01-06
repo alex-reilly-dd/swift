@@ -53,6 +53,7 @@
 #include "GenHeap.h"
 #include "GenKeyPath.h"
 #include "GenObjC.h"
+#include "GenPack.h"
 #include "GenPointerAuth.h"
 #include "GenPoly.h"
 #include "GenProto.h"
@@ -3141,6 +3142,11 @@ class AsyncCallEmission final : public CallEmission {
   Size staticContextSize = Size(0);
   std::optional<AsyncContextLayout> asyncContextLayout;
 
+  /// The number of outstanding pack allocations when begin() was called.
+  /// Used to ensure pack metadata allocated for call arguments is deallocated
+  /// before the async context in LIFO order.
+  size_t packAllocCountAtBegin = 0;
+
   AsyncContextLayout getAsyncContextLayout() {
     if (!asyncContextLayout) {
       asyncContextLayout.emplace(::getAsyncContextLayout(
@@ -3173,6 +3179,11 @@ public:
     super::begin();
     assert(!contextBuffer.isValid());
     assert(!context.isValid());
+
+    // Record the current number of outstanding pack allocations so we can
+    // deallocate any new ones in LIFO order before the async context.
+    packAllocCountAtBegin = IGF.getOutstandingStackPackAllocCount();
+
     auto layout = getAsyncContextLayout();
     // Allocate space for the async context.
 
@@ -3193,6 +3204,12 @@ public:
   void end() override {
     assert(contextBuffer.isValid());
     assert(context.isValid());
+
+    // Deallocate any pack metadata/witness tables that were allocated for this
+    // call's polymorphic arguments BEFORE deallocating the async context.
+    // This maintains LIFO order for the task allocator.
+    IGF.cleanupStackPackAllocsSince(packAllocCountAtBegin);
+
     if (getCallee().getStaticAsyncContextSize(IGF.IGM)) {
       assert(!staticContextSize.isZero());
       emitStaticDeallocAsyncContext(IGF, contextBuffer, staticContextSize);
