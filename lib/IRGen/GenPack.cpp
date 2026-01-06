@@ -723,6 +723,23 @@ void IRGenFunction::withLocalStackPackAllocs(llvm::function_ref<void()> fn) {
   cleanupStackAllocPacks(*this, allocs);
 }
 
+void IRGenFunction::cleanupStackPackAllocsSince(size_t previousCount) {
+  if (OutstandingStackPackAllocs.size() <= previousCount)
+    return;
+
+  // Collect the new allocations (those made after previousCount)
+  SmallVector<StackPackAlloc, 4> newAllocs;
+  for (size_t i = previousCount; i < OutstandingStackPackAllocs.size(); ++i) {
+    newAllocs.push_back(OutstandingStackPackAllocs[i]);
+  }
+  // Remove them from the outstanding set
+  while (OutstandingStackPackAllocs.size() > previousCount) {
+    OutstandingStackPackAllocs.pop_back();
+  }
+  // Clean up in reverse order (LIFO)
+  cleanupStackAllocPacks(*this, newAllocs);
+}
+
 llvm::Value *irgen::emitWitnessTablePackRef(IRGenFunction &IGF,
                                             CanPackType packType,
                                             PackConformance *conformance) {
