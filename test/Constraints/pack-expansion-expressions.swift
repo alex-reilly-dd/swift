@@ -969,3 +969,33 @@ do {
     S { x }.foo() // Make sure we can pick the right 'foo' here.
   }
 }
+
+// rdar://problem/XXXXXXXX - Pack expansion closure nested in outer closure with solver backtracking
+// Test that setCapturedExpansions doesn't crash when solver backtracks
+do {
+  func f<T>(_ x: T) -> [T] { [x] }
+
+  func test<each T>(_ input: repeat each T) {
+    let _ = {
+      (repeat { // expected-error {{pack expansion requires that '_' and 'each T' have the same shape}}
+        if Bool.random() {
+          return f(each input)
+        } else {
+          return (each input)
+        }
+      }())
+    }
+  }
+}
+
+// Test that pack element captures in closures inside pack expansions are
+// correctly propagated to the outer closure as pack captures.
+do {
+  func test<each T>(_ input: repeat each T) {
+    let _ = [0].map { idx in
+      (repeat {
+        return [(each input)]
+      }())
+    }
+  }
+}

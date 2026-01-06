@@ -2998,6 +2998,15 @@ public:
   void setCapturedExpansions(AnyFunctionRef func, SmallVector<PackExpansionExpr *, 1> exprs) {
     assert(CapturedExpansions.count(func) == 0 && "Cannot reset captured expansions");
     CapturedExpansions.insert({func, exprs});
+
+    if (solverState) {
+      recordChange(SolverTrail::Change::RecordedCapturedExpansions(func));
+    }
+  }
+
+  void removeCapturedExpansions(AnyFunctionRef func) {
+    bool erased = CapturedExpansions.erase(func);
+    ASSERT(erased);
   }
 
   TypeVariableType *getKeyPathValueType(const KeyPathExpr *keyPath) const {

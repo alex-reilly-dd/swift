@@ -14,6 +14,7 @@
 #include "Scope.h"
 #include "SILGenFunction.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/CaptureInfo.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/Basic/Assertions.h"
 
@@ -254,6 +255,26 @@ struct MaterializePackEmitter : public ASTWalker {
 
   MaterializePackEmitter(SILGenFunction &SGF) : SGF(SGF) {}
 
+  void emitMaterializePackExpr(MaterializePackExpr *packExpr) {
+    // Don't emit the same pack expr twice.
+    auto *activeExpansion = SGF.getInnermostPackExpansion();
+    if (activeExpansion->MaterializedPacks.count(packExpr))
+      return;
+
+    auto *fromExpr = packExpr->getFromExpr();
+    assert(fromExpr->getType()->is<TupleType>());
+
+    auto &lowering = SGF.getTypeLowering(fromExpr->getType());
+    auto loweredTy = lowering.getLoweredType();
+    auto tupleAddr = SGF.emitTemporaryAllocation(fromExpr, loweredTy);
+    auto init = SGF.useBufferAsTemporary(tupleAddr, lowering);
+    SGF.emitExprInto(fromExpr, init.get());
+
+    // Write the tuple value to a side table in the active pack expansion
+    // to be projected later within the dynamic pack loop.
+    activeExpansion->MaterializedPacks[packExpr] = tupleAddr;
+  }
+
   ASTWalker::PreWalkResult<Expr *> walkToExprPre(Expr *expr) override {
     using Action = ASTWalker::Action;
 
@@ -261,20 +282,29 @@ struct MaterializePackEmitter : public ASTWalker {
     if (isa<PackExpansionExpr>(expr))
       return Action::SkipNode(expr);
 
+    // Don't walk into closures. They will be emitted separately when invoked.
+    // Walking into them would cause us to try to emit references to captured
+    // variables that aren't in VarLocs yet.
+    //
+    // However, we need to process any MaterializePackExpr nodes that are
+    // referenced by the closure's pack element captures, since those need
+    // to be materialized before the pack expansion loop.
+    if (auto *closure = dyn_cast<AbstractClosureExpr>(expr)) {
+      if (auto captureInfo = closure->getCachedCaptureInfo()) {
+        for (auto capture : captureInfo->getCaptures()) {
+          if (auto *packElement = capture.getPackElement()) {
+            if (auto *packExpr =
+                    dyn_cast<MaterializePackExpr>(packElement->getPackRefExpr())) {
+              emitMaterializePackExpr(packExpr);
+            }
+          }
+        }
+      }
+      return Action::SkipNode(expr);
+    }
+
     if (auto *packExpr = dyn_cast<MaterializePackExpr>(expr)) {
-      auto *fromExpr = packExpr->getFromExpr();
-      assert(fromExpr->getType()->is<TupleType>());
-
-      auto &lowering = SGF.getTypeLowering(fromExpr->getType());
-      auto loweredTy = lowering.getLoweredType();
-      auto tupleAddr = SGF.emitTemporaryAllocation(fromExpr, loweredTy);
-      auto init = SGF.useBufferAsTemporary(tupleAddr, lowering);
-      SGF.emitExprInto(fromExpr, init.get());
-
-      // Write the tuple value to a side table in the active pack expansion
-      // to be projected later within the dynamic pack loop.
-      auto *activeExpansion = SGF.getInnermostPackExpansion();
-      activeExpansion->MaterializedPacks[packExpr] = tupleAddr;
+      emitMaterializePackExpr(packExpr);
     }
 
     return Action::Continue(expr);

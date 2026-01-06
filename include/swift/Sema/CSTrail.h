@@ -231,6 +231,9 @@ public:
     /// Create a change that recorded a result builder transform.
     static Change RecordedResultBuilderTransform(AnyFunctionRef fn);
 
+    /// Create a change that recorded captured pack expansions for a function.
+    static Change RecordedCapturedExpansions(AnyFunctionRef fn);
+
     /// Create a change that recorded the contextual type of an AST node.
     static Change RecordedContextualInfo(ASTNode node);
 

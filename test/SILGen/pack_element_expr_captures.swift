@@ -21,3 +21,26 @@ func caller<each T>(_ t: repeat each T) {
 // CHECK: [[ADDR:%.*]] = init_existential_addr %0 : $*Any, $τ_1_0
 // CHECK: copy_addr %1 to [init] [[ADDR]] : $*τ_1_0
 // CHECK: return
+
+// Test that pack element captures in closures inside pack expansions are
+// correctly propagated to the outer closure as pack captures.
+// The outer closure should capture the pack, and the inner closure should
+// capture the pack element from within the pack expansion loop.
+func nestedClosureCapture<each T>(_ input: repeat each T) {
+  let _ = [0].map { idx in
+    (repeat {
+      return [(each input)]
+    }())
+  }
+}
+
+// Test the same scenario but with a tuple input that requires MaterializePackExpr.
+// When the input is a tuple type (repeat each T) rather than a pack parameter,
+// accessing elements with 'each' creates a MaterializePackExpr wrapper.
+func nestedClosureCaptureWithTupleInput<each T>(_ input: (repeat each T)) {
+  let _ = [0].map { idx in
+    (repeat {
+      return [(each input)]
+    }())
+  }
+}
