@@ -727,12 +727,17 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
     auto *nominal = getType().getAnyNominal();
     switch (getMetadataAddress()) {
     case TypeMetadataAddress::FullMetadata:
+      // Non-nominal types (tuples, functions) can be emitted in multiple
+      // modules, so use shared linkage.
+      if (!nominal)
+        return SILLinkage::Shared;
+
       // For imported types, the full metadata object is a candidate
       // for uniquing.
       if (getDeclLinkage(nominal) == FormalLinkage::PublicNonUnique)
         return SILLinkage::Shared;
 
-      // Prespecialization of the same generic metadata may be requested 
+      // Prespecialization of the same generic metadata may be requested
       // multiple times within the same module, so it needs to be uniqued.
       if (nominal->isGenericContext())
         return SILLinkage::Shared;
@@ -1154,6 +1159,11 @@ llvm::Type *LinkEntity::getDefaultDeclarationType(IRGenModule &IGM) const {
       if (isEmbeddedWithExistentials) {
         return IGM.EmbeddedExistentialsMetadataStructTy;
       }
+      // Singleton metadata types use existential metadata layout
+      auto type = getType();
+      if (type->is<BuiltinType>() || type->isAny() || type->isAnyObject() ||
+          type->isVoid())
+        return IGM.FullExistentialTypeMetadataStructTy;
       if (getType().getClassOrBoundGenericClass())
         return IGM.FullHeapMetadataStructTy;
       else

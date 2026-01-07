@@ -1520,7 +1520,9 @@ void IRGenerator::emitLazyDefinitions() {
 
     while(!LazySpecializedValueMetadata.empty()) {
       CanType valueType = LazySpecializedValueMetadata.pop_back_val();
-      CurrentIGMPtr IGM = getGenModule(valueType->getNominalOrBoundGenericNominal());
+      // For tuples and other non-nominal types, use the primary IGM
+      auto *nominal = valueType->getNominalOrBoundGenericNominal();
+      CurrentIGMPtr IGM = getGenModule(nominal);
       emitLazySpecializedValueMetadata(*IGM.get(), valueType);
     }
   }
@@ -5377,10 +5379,6 @@ llvm::GlobalValue *IRGenModule::defineTypeMetadata(
     if (isa<ClassDecl>(nominal)) {
       adjustmentIndex = MetadataAdjustmentIndex::Class;
     }
-
-    if (concreteType->is<TupleType>()) {
-      adjustmentIndex = MetadataAdjustmentIndex::NoTypeLayoutString;
-    }
   }
 
   if (hasEmbeddedExistentials) {
@@ -5432,7 +5430,7 @@ IRGenModule::getAddrOfTypeMetadata(CanType concreteType,
   if (hasEmbeddedExistentials) {
     adjustmentIndex = 0;
     defaultVarTy = EmbeddedExistentialsMetadataStructTy;
-  } else if (concreteType->isAny() || concreteType->isAnyObject() || concreteType->isVoid() || concreteType->is<TupleType>() || concreteType->is<BuiltinType>()) {
+  } else if (concreteType->isAny() || concreteType->isAnyObject() || concreteType->isVoid() || concreteType->is<BuiltinType>()) {
     defaultVarTy = FullExistentialTypeMetadataStructTy;
     adjustmentIndex = MetadataAdjustmentIndex::NoTypeLayoutString;
   } else if (fullMetadata) {
@@ -5484,6 +5482,7 @@ IRGenModule::getAddrOfTypeMetadata(CanType concreteType,
     }
   }
 
+  // Trigger lazy metadata emission for tuples and functions in embedded mode.
   if (hasEmbeddedExistentials &&
       (isa<TupleType>(concreteType) ||
        isa<FunctionType>(concreteType))) {
@@ -5546,7 +5545,10 @@ IRGenModule::getAddrOfTypeMetadata(CanType concreteType,
   }
 
   // Adjust if necessary.
-  if (adjustmentIndex) {
+  // Only apply adjustment for FullMetadata entities - AddressPoint entities
+  // already have the offset baked in via the alias created by defineTypeMetadata.
+  bool needsAdjustment = adjustmentIndex && fullMetadata;
+  if (needsAdjustment) {
     llvm::Constant *indices[] = {
       llvm::ConstantInt::get(Int32Ty, 0),
       llvm::ConstantInt::get(Int32Ty, adjustmentIndex)

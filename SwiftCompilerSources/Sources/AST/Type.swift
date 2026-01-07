@@ -187,6 +187,7 @@ extension TypeProperties {
   public var isBox: Bool { rawType.bridged.isBox() }
   public var isPack: Bool { rawType.bridged.isPack() }
   public var isSILPack: Bool { rawType.bridged.isSILPack() }
+  public var numPackElements: Int { Int(rawType.bridged.getNumPackElements()) }
 
   public var canBeClass: Type.TraitResult { rawType.bridged.canBeClass().result }
 
@@ -332,6 +333,12 @@ extension TypeProperties {
 
   public var containsSILPackExpansionType: Bool {
     return rawType.bridged.containsSILPackExpansionType()
+  }
+
+  /// Returns true if this pack type contains any pack expansion types.
+  /// This works for both AST PackType and SIL SILPackType.
+  public var containsPackExpansionType: Bool {
+    return rawType.bridged.containsPackExpansionType()
   }
 
   public var isSILPackElementAddress: Bool {

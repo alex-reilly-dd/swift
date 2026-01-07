@@ -529,6 +529,9 @@ void addFunctionPasses(SILPassPipelinePlan &P,
   if (!P.getOptions().EmbeddedSwift) {
     P.addGenericSpecializer();
     P.addPackSpecialization();
+    // Eliminate concrete pack allocations after generic specialization
+    // creates functions with concrete pack types.
+    P.addConcretePackElimination();
     // Run devirtualizer after the specializer, because many
     // class_method/witness_method instructions may use concrete types now.
     P.addDevirtualizer();

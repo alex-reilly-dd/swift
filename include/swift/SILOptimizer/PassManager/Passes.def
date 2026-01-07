@@ -160,6 +160,8 @@ PASS(LoopInvariantCodeMotion, "loop-invariant-code-motion",
      "New Loop Invariant Code Motion")
 PASS(PackSpecialization, "pack-specialization",
      "Specialize uses of parameter packs")
+PASS(ConcretePackElimination, "concrete-pack-elimination",
+     "Eliminate concrete pack allocations with individual stack slots")
 
 PASS(ClosureSpecialization, "closure-specialization",
      "Specialize functions with closure arguments")

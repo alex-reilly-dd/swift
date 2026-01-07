@@ -976,10 +976,13 @@ bool irgen::isCanonicalCompleteTypeMetadataStaticallyAddressable(
     return IGM.getTypeInfoForUnlowered(type).isFixedSize(expansion);
   }
 
-  // The empty tuple type has a singleton metadata.
-  if (auto tuple = dyn_cast<TupleType>(type))
-    return tuple->getNumElements() == 0;
-  
+  // Empty tuple has singleton metadata in the runtime
+  if (auto tuple = dyn_cast<TupleType>(type)) {
+    if (tuple->getNumElements() == 0)
+      return true;
+    return false;
+  }
+
   // Any and AnyObject have singleton metadata.
   if (type->isAny() || type->isAnyObject())
     return true;

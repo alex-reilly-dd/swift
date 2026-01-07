@@ -77,6 +77,7 @@
 #include "StructMetadataVisitor.h"
 #include "TupleMetadataVisitor.h"
 #include "FunctionMetadataVisitor.h"
+#include "GenTuple.h"
 
 #include "GenMeta.h"
 
@@ -6310,10 +6311,51 @@ public:
                        IGM.getOptions().PointerAuth.ValueWitnessTable,
                        PointerAuthEntity());
   }
+
+  void addNumElementsInfo() {
+    B.addInt(IGM.SizeTy, Target->getNumElements());
+  }
+
+  void addLabelsInfo() {
+    auto canTupleTy = cast<TupleType>(Target->getCanonicalType());
+    B.add(getTupleLabelsString(IGM, canTupleTy));
+  }
+
+  void addElement(unsigned idx, const TupleTypeElt &elt) {
+    // Element type metadata pointer
+    auto eltTy = elt.getType()->getCanonicalType();
+    B.add(IGM.getAddrOfTypeMetadata(eltTy));
+
+    // Element offset - compute from type layout
+    auto canTupleTy = Target->getCanonicalType();
+    auto &ti = IGM.getTypeInfo(SILType::getPrimitiveObjectType(canTupleTy));
+    if (ti.isFixedSize()) {
+      // For tuples with fixed layout, compute offset from element index
+      Size elementOffset = Size(0);
+      for (unsigned i = 0; i < idx; ++i) {
+        auto prevEltTy = Target->getElementType(i)->getCanonicalType();
+        auto &prevTI = IGM.getTypeInfo(SILType::getPrimitiveObjectType(prevEltTy));
+        if (prevTI.isFixedSize()) {
+          auto &prevFixedTI = cast<FixedTypeInfo>(prevTI);
+          elementOffset = elementOffset.roundUpToAlignment(prevFixedTI.getFixedAlignment());
+          elementOffset += prevFixedTI.getFixedSize();
+        }
+      }
+      // Align for current element
+      auto &eltTI = IGM.getTypeInfo(SILType::getPrimitiveObjectType(eltTy));
+      if (eltTI.isFixedSize()) {
+        auto &eltFixedTI = cast<FixedTypeInfo>(eltTI);
+        elementOffset = elementOffset.roundUpToAlignment(eltFixedTI.getFixedAlignment());
+      }
+      B.addInt(IGM.SizeTy, elementOffset.getValue());
+    } else {
+      // Non-fixed size - use 0 as placeholder (runtime will compute)
+      B.addInt(IGM.SizeTy, 0);
+    }
+  }
 };
 } // end anonymous namespace
 void irgen::emitLazyTupleMetadata(IRGenModule &IGM, CanType tupleTy) {
-  assert(IGM.isEmbeddedWithExistentials());
   assert(isa<TupleType>(tupleTy));
 
   Type ty = tupleTy.getPointer();
@@ -6329,7 +6371,11 @@ void irgen::emitLazyTupleMetadata(IRGenModule &IGM, CanType tupleTy) {
   bool canBeConstant = true;
 
   TupleMetadataBuilder builder(IGM, tupleTy, init);
-  builder.embeddedLayout();
+  if (IGM.isEmbeddedWithExistentials()) {
+    builder.embeddedLayout();
+  } else {
+    builder.layout();
+  }
 
   IGM.defineTypeMetadata(tupleTy, isPattern, canBeConstant,
                          init.finishAndCreateFuture());

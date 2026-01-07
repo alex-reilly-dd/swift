@@ -631,6 +631,16 @@ bool BridgedASTType::isSILPack() const {
   return unbridged()->is<swift::SILPackType>();
 }
 
+SwiftInt BridgedASTType::getNumPackElements() const {
+  if (auto *packType = unbridged()->getAs<swift::PackType>()) {
+    return packType->getNumElements();
+  }
+  if (auto *silPackType = unbridged()->getAs<swift::SILPackType>()) {
+    return silPackType->getNumElements();
+  }
+  return 0;
+}
+
 BridgedASTType BridgedASTType::getBuiltinVectorElementType() const {
   return {unbridged()->castTo<swift::BuiltinVectorType>()->getElementType().getPointer()};
 }
@@ -758,6 +768,18 @@ BridgedConformance BridgedASTType::checkConformance(BridgedDeclObj proto) const 
 
 bool BridgedASTType::containsSILPackExpansionType() const {
   return unbridged()->castTo<swift::SILPackType>()->containsPackExpansionType();
+}
+
+bool BridgedASTType::containsPackExpansionType() const {
+  // Check for AST PackType
+  if (auto *packType = unbridged()->getAs<swift::PackType>()) {
+    return packType->containsPackExpansionType();
+  }
+  // Check for SIL PackType
+  if (auto *silPackType = unbridged()->getAs<swift::SILPackType>()) {
+    return silPackType->containsPackExpansionType();
+  }
+  return false;
 }
 
 bool BridgedASTType::isSILPackElementAddress() const {
