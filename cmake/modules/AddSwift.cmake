@@ -457,11 +457,14 @@ function(_add_swift_runtime_link_flags target relpath_to_lib_dir bootstrapping)
       # (https://cmake.org/cmake/help/latest/command/add_library.html#interface-libraries)
       # In order to specify a dependency to it using `add_dependencies`
       # we need to manually "expand" its underlying targets
-      get_property(compatibility_libs
-        TARGET HostCompatibilityLibs
-        PROPERTY INTERFACE_LINK_LIBRARIES)
-      set(compatibility_libs_path
-        "${SWIFTLIB_DIR}/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}/${SWIFT_HOST_VARIANT_ARCH}")
+      # Note: HostCompatibilityLibs may not exist yet due to cmake processing order
+      if(TARGET HostCompatibilityLibs)
+        get_property(compatibility_libs
+          TARGET HostCompatibilityLibs
+          PROPERTY INTERFACE_LINK_LIBRARIES)
+        set(compatibility_libs_path
+          "${SWIFTLIB_DIR}/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}/${SWIFT_HOST_VARIANT_ARCH}")
+      endif()
     endif()
 
     # If we found a swift compiler and are going to use swift code in swift

@@ -1162,7 +1162,7 @@ llvm::Type *LinkEntity::getDefaultDeclarationType(IRGenModule &IGM) const {
       // Singleton metadata types use existential metadata layout
       auto type = getType();
       if (type->is<BuiltinType>() || type->isAny() || type->isAnyObject() ||
-          type->isVoid())
+          type->isVoid() || type->is<TupleType>())
         return IGM.FullExistentialTypeMetadataStructTy;
       if (getType().getClassOrBoundGenericClass())
         return IGM.FullHeapMetadataStructTy;

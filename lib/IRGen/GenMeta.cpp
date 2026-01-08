@@ -6356,6 +6356,7 @@ public:
 };
 } // end anonymous namespace
 void irgen::emitLazyTupleMetadata(IRGenModule &IGM, CanType tupleTy) {
+  assert(IGM.isEmbeddedWithExistentials());
   assert(isa<TupleType>(tupleTy));
 
   Type ty = tupleTy.getPointer();
@@ -6371,11 +6372,7 @@ void irgen::emitLazyTupleMetadata(IRGenModule &IGM, CanType tupleTy) {
   bool canBeConstant = true;
 
   TupleMetadataBuilder builder(IGM, tupleTy, init);
-  if (IGM.isEmbeddedWithExistentials()) {
-    builder.embeddedLayout();
-  } else {
-    builder.layout();
-  }
+  builder.embeddedLayout();
 
   IGM.defineTypeMetadata(tupleTy, isPattern, canBeConstant,
                          init.finishAndCreateFuture());
