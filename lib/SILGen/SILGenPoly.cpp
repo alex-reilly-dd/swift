@@ -5038,10 +5038,9 @@ void ResultPlanner::planExpandedFromDirect(AbstractionPattern innerOrigType,
 
   SILType innerResultTy = SGF.getSILType(innerResult, CanSILFunctionType());
 
-  // If the substituted tuples contain pack expansions, we need to
-  // store the direct type to a temporary and then plan as if the
-  // result was indirect, because we can't do pack loops in SIL on
-  // scalar tuples.
+  // If the substituted tuples contain pack expansions, we need to store
+  // the direct type to a temporary and then plan as if the result was
+  // indirect, because we can't do pack loops in SIL on scalar tuples.
   assert(innerSubstType->containsPackExpansionType() ==
            outerSubstType->containsPackExpansionType());
   if (innerSubstType->containsPackExpansionType()) {
@@ -5234,7 +5233,7 @@ static void destructureAndReverseTuple(SILGenFunction &SGF,
                                     SmallVectorImpl<SILValue> &values) {
   auto tupleTy = tupleValue->getType().castTo<TupleType>();
   assert(!tupleTy->containsPackExpansionType() &&
-         "cannot destructure a tuple with pack expansions in it");
+         "cannot destructure a tuple containing pack expansions");
 
   SGF.B.emitDestructureValueOperation(loc, tupleValue, values);
   std::reverse(values.end() - tupleTy->getNumElements(), values.end());

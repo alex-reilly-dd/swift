@@ -132,6 +132,15 @@ static bool shouldProfile(SILDeclRef Constant) {
         LLVM_DEBUG(llvm::dbgs() << "Skipping function: body replaced\n");
         return false;
       }
+
+      // Do not profile functions whose bodies were skipped during
+      // type-checking. The AST may be incomplete (e.g., ApplyExprs without
+      // their throws bit set), which can cause crashes when walking for
+      // coverage.
+      if (AFD->isBodySkipped()) {
+        LLVM_DEBUG(llvm::dbgs() << "Skipping function: body was skipped\n");
+        return false;
+      }
     }
   }
 

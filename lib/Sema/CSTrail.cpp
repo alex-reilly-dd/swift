@@ -237,6 +237,14 @@ SolverTrail::Change::RecordedResultBuilderTransform(AnyFunctionRef fn) {
 }
 
 SolverTrail::Change
+SolverTrail::Change::RecordedCapturedExpansions(AnyFunctionRef fn) {
+  Change result;
+  result.Kind = ChangeKind::RecordedCapturedExpansions;
+  result.TheRef = fn;
+  return result;
+}
+
+SolverTrail::Change
 SolverTrail::Change::RecordedContextualInfo(ASTNode node) {
   Change result;
   result.Kind = ChangeKind::RecordedContextualInfo;
@@ -461,6 +469,10 @@ void SolverTrail::Change::undo(ConstraintSystem &cs) const {
 
   case ChangeKind::RecordedResultBuilderTransform:
     cs.removeResultBuilderTransform(TheRef);
+    break;
+
+  case ChangeKind::RecordedCapturedExpansions:
+    cs.removeCapturedExpansions(TheRef);
     break;
 
   case ChangeKind::AppliedPropertyWrapper:
@@ -743,6 +755,12 @@ void SolverTrail::Change::dump(llvm::raw_ostream &out,
 
   case ChangeKind::RecordedResultBuilderTransform:
     out << "(RecordedResultBuilderTransform ";
+    simple_display(out, TheRef);
+    out << ")\n";
+    break;
+
+  case ChangeKind::RecordedCapturedExpansions:
+    out << "(RecordedCapturedExpansions ";
     simple_display(out, TheRef);
     out << ")\n";
     break;

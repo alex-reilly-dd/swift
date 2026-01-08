@@ -423,11 +423,37 @@ public:
           capture.getDecl()->getDeclContext() == CurDC)
         continue;
 
-      // If the inner closure is nested in a PackExpansionExpr, it's
-      // PackElementExpr captures are not our captures.
-      if (capture.getPackElement() &&
-          !VisitingPackExpansionEnv.empty())
-        continue;
+      // If the inner closure is nested in a PackExpansionExpr, a
+      // PackElementExpr capture should be promoted to a capture of the
+      // underlying pack.
+      if (auto *packElement = capture.getPackElement()) {
+        if (!VisitingPackExpansionEnv.empty()) {
+          // Get the underlying pack reference from the pack element.
+          // If it's a DeclRefExpr to a VarDecl, we need to capture that.
+          // The reference might be wrapped in a MaterializePackExpr when
+          // accessing elements of a tuple with pack expansion type.
+          Expr *packRef = packElement->getPackRefExpr();
+          if (auto *materialize = dyn_cast<MaterializePackExpr>(packRef))
+            packRef = materialize->getFromExpr();
+
+          if (auto *declRef = dyn_cast<DeclRefExpr>(packRef)) {
+            if (auto *var = dyn_cast<VarDecl>(declRef->getDecl())) {
+              // Check if this was captured from us.
+              if (var->getDeclContext() == CurDC)
+                continue;
+
+              // Compute adjusted flags.
+              unsigned Flags = capture.getFlags();
+              Flags &= ~CapturedValue::IsDirect;
+              if (!NoEscape)
+                Flags &= ~CapturedValue::IsNoEscape;
+
+              addCapture(CapturedValue(var, Flags, capture.getLoc()));
+            }
+          }
+          continue;
+        }
+      }
 
       // Compute adjusted flags.
       unsigned Flags = capture.getFlags();

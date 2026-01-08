@@ -6469,6 +6469,14 @@ EnumImplStrategy::get(TypeConverter &TC, SILType type, EnumDecl *theEnum) {
     Type origPayloadType = elt->getPayloadInterfaceType();
     origPayloadType = theEnum->mapTypeIntoEnvironment(origPayloadType);
 
+    // If the payload is a bare PackExpansionType (unlabeled pack parameter),
+    // wrap it in a single-element tuple to match the SIL representation.
+    // This is consistent with what getEnumElementType does.
+    if (origPayloadType->is<PackExpansionType>()) {
+      origPayloadType = TupleType::get({TupleTypeElt(origPayloadType)},
+                                       theEnum->getASTContext());
+    }
+
     auto origArgLoweredTy = TC.IGM.getLoweredType(origPayloadType);
     auto *origArgTI = &TC.getCompleteTypeInfo(origArgLoweredTy.getASTType());
 

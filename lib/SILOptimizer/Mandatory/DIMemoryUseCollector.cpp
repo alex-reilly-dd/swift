@@ -84,8 +84,7 @@ static unsigned getElementCountRec(TypeExpansionContext context,
   // If this is a tuple, it is usually recursively flattened.
   if (CanTupleType TT = T.getAs<TupleType>()) {
     assert(!IsSelfOfNonDelegatingInitializer && "self never has tuple type");
-    // Don't flatten tuples containing pack expansions - they have a dynamic
-    // number of elements that cannot be statically enumerated.
+    // Tuples containing pack expansions cannot be statically enumerated.
     if (TT->containsPackExpansionType())
       return 1;
     unsigned NumElements = 0;
@@ -318,8 +317,7 @@ SILValue DIMemoryObjectInfo::emitElementAddressForDestroy(
     if (CanTupleType TT = PointeeType.getAs<TupleType>()) {
       assert(!IsSelf && "self never has tuple type");
 
-      // Tuples containing pack expansions are treated as single elements
-      // since they have a dynamic number of elements.
+      // Tuples containing pack expansions are treated as single elements.
       if (TT->containsPackExpansionType()) {
         assert(EltNo == 0 && "pack expansion tuple should be single element");
         return Ptr;

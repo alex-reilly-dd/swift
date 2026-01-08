@@ -1093,7 +1093,7 @@ IRGenModule::getAddrOfKeyPathPattern(KeyPathPattern *pattern,
   auto found = KeyPathPatterns.find(pattern);
   if (found != KeyPathPatterns.end())
     return found->second;
-  
+
   // Gather type arguments from the root and leaf types of the key path.
   auto rootTy = pattern->getRootType();
   auto valueTy = pattern->getValueType();
