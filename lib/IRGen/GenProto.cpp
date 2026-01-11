@@ -3230,8 +3230,15 @@ MetadataResponse MetadataPath::followComponent(IRGenFunction &IGF,
       auto response = MetadataResponse::forBounded(argMetadata, argState);
 
       // Do a dynamic check if necessary to satisfy the request.
-      assert((requirement.isMetadata() || request.isSatisfiedBy(response)) &&
-             "checkTypeMetadataState for packs is currently unimplemented");
+      // For metadata packs, we cannot call emitCheckTypeMetadataState because
+      // the pack pointer is a TypeMetadataPtrPtr (pointer to array of metadata
+      // pointers), not a TypeMetadataPtr. Passing it to swift_checkMetadataState
+      // would cause a crash.
+      if (requirement.isMetadataPack()) {
+        assert(request.isSatisfiedBy(response) &&
+               "checkTypeMetadataState for packs is currently unimplemented");
+        return response;
+      }
       return emitCheckTypeMetadataState(IGF, request, response);
 
     // If this is a shape class, load the value.

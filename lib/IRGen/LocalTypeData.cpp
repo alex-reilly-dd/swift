@@ -271,6 +271,14 @@ LocalTypeDataCache::tryGet(IRGenFunction &IGF, LocalTypeDataKey key,
 
     assert(key.Kind.isAnyTypeMetadata());
 
+    // For pack types, the cached value is a pack metadata pointer (pointer to
+    // array of metadata pointers), not actual type metadata. We cannot call
+    // emitCheckTypeMetadataState on it because swift_checkMetadataState
+    // expects actual type metadata. Just return the value directly.
+    if (isa<PackType>(key.Type)) {
+      return entry->Value;
+    }
+
     // Emit a dynamic check that the type metadata matches the request.
     // TODO: we could potentially end up calling this redundantly with a
     //   dynamic request.  Fortunately, those are used only in very narrow
