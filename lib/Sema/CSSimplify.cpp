@@ -7416,8 +7416,15 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
   //
   // `LValueType`s are also ignored at this stage to avoid accidentally wrapping them. If they
   //  are valid wrapping targets, they will be tuple-wrapped after the lvalue is converted.
+  //
+  // We also handle single-element pack expansion tuples like `(repeat each T)`
+  // which contain concrete PackExpansionTypes rather than type variables.
+  // This is important for default argument inference where `(1)` flattens to
+  // `Int` and needs to match `(repeat each T)`.
   if (isTupleWithUnresolvedPackExpansion(origType1) ||
-      isTupleWithUnresolvedPackExpansion(origType2)) {
+      isTupleWithUnresolvedPackExpansion(origType2) ||
+      isSingleUnlabeledPackExpansionTuple(origType1) ||
+      isSingleUnlabeledPackExpansionTuple(origType2)) {
     auto isTypeVariableWrappedInOptional = [](Type type) {
       if (type->getOptionalObjectType()) {
         return type->lookThroughAllOptionalTypes()->isTypeVariableOrMember();
@@ -7430,7 +7437,9 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         !isTypeVariableWrappedInOptional(desugar1) &&
         !isTypeVariableWrappedInOptional(desugar2) &&
         !desugar1->isAny() &&
-        !desugar2->isAny()) {
+        !desugar2->isAny() &&
+        !desugar1->isUninhabited() &&
+        !desugar2->isUninhabited()) {
       return matchTypes(
           desugar1->is<TupleType>() ? type1
                                     : TupleType::get({type1}, getASTContext()),
