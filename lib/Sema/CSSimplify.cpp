@@ -7431,11 +7431,17 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       }
       return false;
     };
+    // Don't wrap Optional types - they should be handled by optional injection
+    auto isOptionalType = [](Type type) {
+      return bool(type->getOptionalObjectType());
+    };
     if (isa<TupleType>(desugar1) != isa<TupleType>(desugar2) &&
         !isa<InOutType>(desugar1) && !isa<InOutType>(desugar2) &&
         !isa<LValueType>(desugar1) && !isa<LValueType>(desugar2) &&
         !isTypeVariableWrappedInOptional(desugar1) &&
         !isTypeVariableWrappedInOptional(desugar2) &&
+        !isOptionalType(desugar1) &&
+        !isOptionalType(desugar2) &&
         !desugar1->isAny() &&
         !desugar2->isAny() &&
         !desugar1->isUninhabited() &&

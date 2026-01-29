@@ -3917,13 +3917,16 @@ private:
 
     auto substType = arg.getSubstRValueType();
 
-    // If the substituted type contains pack expansions (e.g., we're in a
-    // generic context with type `(repeat each T)`), we can't statically
-    // decompose the tuple into individual arguments. Instead, emit the tuple
-    // as a single value and use dynamic pack iteration to expand it into
-    // the pack parameter.
+    // If the substituted type is a single-element pack expansion tuple (e.g.,
+    // `(repeat each T)` in a generic context), we can't statically decompose
+    // the tuple into individual arguments. Instead, emit the tuple as a single
+    // value and use dynamic pack iteration to expand it into the pack parameter.
+    // Note: We only handle single-element pack expansion tuples here. Tuples
+    // with multiple pack expansions (e.g., `(repeat each X, repeat each Y)`)
+    // are handled by the normal forEachTupleElement path below.
     if (auto substTupleType = dyn_cast<TupleType>(substType)) {
-      if (substTupleType.containsPackExpansionType()) {
+      if (substTupleType->getNumElements() == 1 &&
+          isa<PackExpansionType>(substTupleType.getElementType(0))) {
         emitExpandedPackExpansionTuple(std::move(arg), origParamType,
                                        substTupleType);
         return;
