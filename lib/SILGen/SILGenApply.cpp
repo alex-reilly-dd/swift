@@ -3917,16 +3917,13 @@ private:
 
     auto substType = arg.getSubstRValueType();
 
-    // If the substituted type is a single-element pack expansion tuple (e.g.,
-    // `(repeat each T)` in a generic context), we can't statically decompose
-    // the tuple into individual arguments. Instead, emit the tuple as a single
-    // value and use dynamic pack iteration to expand it into the pack parameter.
-    // Note: We only handle single-element pack expansion tuples here. Tuples
-    // with multiple pack expansions (e.g., `(repeat each X, repeat each Y)`)
-    // are handled by the normal forEachTupleElement path below.
+    // If the substituted type contains pack expansions (e.g., we're in a
+    // generic context with type `(repeat each T)` or `(repeat each X, repeat each Y)`),
+    // we can't statically decompose the tuple into individual arguments.
+    // Instead, emit the tuple as a single value and use dynamic pack iteration
+    // to expand it into the pack parameter.
     if (auto substTupleType = dyn_cast<TupleType>(substType)) {
-      if (substTupleType->getNumElements() == 1 &&
-          isa<PackExpansionType>(substTupleType.getElementType(0))) {
+      if (substTupleType.containsPackExpansionType()) {
         emitExpandedPackExpansionTuple(std::move(arg), origParamType,
                                        substTupleType);
         return;
@@ -3961,7 +3958,8 @@ private:
 
   /// Emit an argument that is a tuple containing pack expansions.
   /// This handles the case where we're in a generic context and the tuple
-  /// type still contains pack expansion types (e.g., `(repeat each T)`).
+  /// type still contains pack expansion types (e.g., `(repeat each T)` or
+  /// `(repeat each X, repeat each Y)`).
   void emitExpandedPackExpansionTuple(ArgumentSource &&arg,
                                       AbstractionPattern origParamType,
                                       CanTupleType substTupleType) {
@@ -3984,6 +3982,7 @@ private:
 
     // Get the formal pack type from the tuple's element types.
     // For a tuple like (repeat each T), this creates Pack{repeat each T}.
+    // For (repeat each X, repeat each Y), this creates Pack{repeat each X, repeat each Y}.
     SmallVector<CanType, 4> packElts;
     for (auto elt : substTupleType.getElementTypes()) {
       packElts.push_back(elt);
@@ -3992,37 +3991,42 @@ private:
 
     // For each pack expansion element in the tuple, we need to emit a dynamic
     // loop that projects elements from the tuple into the pack.
-    // For now, we only support the simple case of a single pack expansion.
-    assert(substTupleType->getNumElements() == 1 &&
-           "only single pack expansion tuples are currently supported");
-    auto expansionType = substTupleType.getElementType(0);
-    assert(isa<PackExpansionType>(expansionType) &&
-           "expected pack expansion type");
+    // We iterate over all tuple elements and emit a loop for each pack expansion.
+    for (unsigned componentIndex = 0;
+         componentIndex < substTupleType->getNumElements();
+         ++componentIndex) {
+      auto elementType = substTupleType.getElementType(componentIndex);
 
-    // Get the lowered pack expansion type from the SIL pack type.
-    SILType packExpansionTy = packTy->getSILElementType(0);
+      // Skip non-pack-expansion elements (concrete types mixed with expansions)
+      if (!isa<PackExpansionType>(elementType))
+        continue;
 
-    // Create an opened element environment for the pack expansion.
-    // This maps the pack archetypes to element archetypes for use in the loop.
-    SILType eltTy;
-    auto openedElementEnv = SGF.createOpenedElementValueEnvironment(
-        {packExpansionTy}, {&eltTy});
+      // Get the lowered pack expansion type from the SIL pack type.
+      SILType packExpansionTy = packTy->getSILElementType(componentIndex);
 
-    SGF.emitDynamicPackLoop(loc, formalPackType, /*component index*/ 0,
-                            openedElementEnv,
-                            /*before control flow*/ []() -> SILBasicBlock * { return nullptr; },
-                            [&](SILValue indexWithinComponent,
-                                SILValue packExpansionIndex,
-                                SILValue packIndex) {
-      // Project the element from the tuple.
-      auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
-          loc, packExpansionIndex, tupleValue.getValue(), eltTy);
+      // Create an opened element environment for this pack expansion.
+      // This maps the pack archetypes to element archetypes for use in the loop.
+      SILType eltTy;
+      auto openedElementEnv = SGF.createOpenedElementValueEnvironment(
+          {packExpansionTy}, {&eltTy});
 
-      // Store the tuple element address into the pack.
-      // The pack is an indirect pack (array of pointers), so we use
-      // pack_element_set to store the address of each tuple element.
-      SGF.B.createPackElementSet(loc, tupleEltAddr, packIndex, pack);
-    });
+      SGF.emitDynamicPackLoop(loc, formalPackType, componentIndex,
+                              openedElementEnv,
+                              /*before control flow*/ []() -> SILBasicBlock * { return nullptr; },
+                              [&](SILValue indexWithinComponent,
+                                  SILValue packExpansionIndex,
+                                  SILValue packIndex) {
+        // Project the element from the tuple using the full pack index.
+        // packIndex is the composed index into the full pack (not just the component).
+        auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
+            loc, packIndex, tupleValue.getValue(), eltTy);
+
+        // Store the tuple element address into the pack.
+        // The pack is an indirect pack (array of pointers), so we use
+        // pack_element_set to store the address of each tuple element.
+        SGF.B.createPackElementSet(loc, tupleEltAddr, packIndex, pack);
+      });
+    }
 
     bool consumed = param.getConvention() == ParameterConvention::Pack_Owned;
     if (!consumed) {

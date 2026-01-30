@@ -1178,6 +1178,11 @@ public:
     polyArgs.transferInto(args, polyArgs.size());
   }
   virtual llvm::CallInst *createCall(FunctionPointer &fnPtr) = 0;
+  /// Deallocate the async context buffer if this is an async forwarder.
+  /// This must be called before any pack metadata cleanup to maintain LIFO
+  /// order for the task allocator, since the async context is allocated after
+  /// pack metadata during argument preparation.
+  virtual void deallocAsyncContextIfNeeded() {}
   virtual void createReturn(llvm::CallInst *call) = 0;
   virtual void end(){};
   virtual ~PartialApplicationForwarderEmission() {}
@@ -1470,8 +1475,15 @@ public:
         cast<llvm::StructType>(signature.getType()->getReturnType());
     return subIGF.emitSuspendAsyncCall(asyncContextIndex, resultTy, arguments);
   }
-  void createReturn(llvm::CallInst *call) override {
+  void deallocAsyncContextIfNeeded() override {
+    // Deallocate the async context buffer. This must happen before any pack
+    // metadata cleanup because the async context was allocated after pack
+    // metadata during mapAsyncParameters.
     emitDeallocAsyncContext(subIGF, calleeContextBuffer);
+  }
+  void createReturn(llvm::CallInst *call) override {
+    // Note: async context deallocation is now handled by deallocAsyncContextIfNeeded()
+    // which is called earlier to maintain LIFO order with pack metadata allocations.
     forwardAsyncCallResult(subIGF, origType, layout, call);
   }
   void end() override {
@@ -1810,6 +1822,11 @@ static llvm::Value *emitPartialApplicationForwarder(
       substType, outType, subs, layout, conventions);
   emission->begin();
   emission->gatherArgumentsFromApply();
+
+  // Record the current pack allocation count so we can clean up any pack
+  // metadata allocated during polymorphic argument emission or type metadata
+  // access. This maintains LIFO order for the task allocator.
+  auto packAllocCountBefore = subIGF.getOutstandingStackPackAllocCount();
 
   struct AddressToDeallocate {
     SILType Type;
@@ -2274,9 +2291,20 @@ static llvm::Value *emitPartialApplicationForwarder(
       !needsAllocas &&  (!consumesContext || !dependsOnContextLifetime))
     call->setTailCall();
 
-  // Deallocate everything we allocated above.
+  // For async functions, deallocate the async call context buffer first.
+  // The async context was allocated AFTER pack metadata (in mapAsyncParameters),
+  // so it must be deallocated BEFORE pack metadata cleanup to maintain LIFO order.
+  emission->deallocAsyncContextIfNeeded();
+
+  // Clean up any pack metadata allocated during capture processing or
+  // polymorphic argument emission. This must happen before any subsequent
+  // deallocations to maintain LIFO order for the task allocator.
+  subIGF.cleanupStackPackAllocsSince(packAllocCountBefore);
+
+  // Deallocate everything we allocated above in reverse order (LIFO) to
+  // maintain proper allocation order for the task allocator.
   // FIXME: exceptions?
-  for (auto &entry : addressesToDeallocate) {
+  for (auto &entry : llvm::reverse(addressesToDeallocate)) {
     entry.TI.deallocateStack(subIGF, entry.Addr, entry.Type);
   }
   
@@ -2569,6 +2597,11 @@ std::optional<StackAddress> irgen::emitFunctionPartialApplication(
     else
       data = IGF.IGM.RefCountedNull;
   } else {
+    // Record the current pack allocation count so we can clean up any pack
+    // metadata allocated during layout computation, capture initialization,
+    // or other operations. This is necessary to maintain LIFO order for the
+    // task allocator when capturing values whose types require pack metadata.
+    auto packAllocCountBefore = IGF.getOutstandingStackPackAllocCount();
 
     // Allocate a new object on the heap or stack.
     HeapNonFixedOffsets offsets(IGF, layout);
@@ -2587,7 +2620,7 @@ std::optional<StackAddress> irgen::emitFunctionPartialApplication(
         data = IGF.emitUnmanagedAlloc(layout, "closure", descriptor, &offsets);
     }
     Address dataAddr = layout.emitCastTo(IGF, data);
-    
+
     // Store the context arguments.
     for (unsigned i : indices(layout.getElements())) {
       auto &fieldLayout = layout.getElement(i);
@@ -2657,6 +2690,11 @@ std::optional<StackAddress> irgen::emitFunctionPartialApplication(
         break;
       }
     }
+
+    // Clean up any pack metadata allocated during capture initialization.
+    // This must happen before any subsequent deallocations to maintain LIFO
+    // order for the task allocator.
+    IGF.cleanupStackPackAllocsSince(packAllocCountBefore);
   }
   assert(args.empty() && "unused args in partial application?!");
   
