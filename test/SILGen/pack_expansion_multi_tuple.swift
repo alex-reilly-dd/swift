@@ -12,14 +12,42 @@ struct Holder<each T: P> {
     let values: (repeat each T)
 }
 
-// CHECK-LABEL: sil hidden [ossa] @$s26pack_expansion_multi_tuple4test_1yyx_txxQp_tq__tq_Qp_tRvzRv_AA1PRzAaER_r0_lF
-func test<each X: P, each Y: P>(_ x: (repeat each X), _ y: (repeat each Y)) {
+// Test 1: Direct inline construction of multi-pack tuple
+// CHECK-LABEL: sil hidden [ossa] @$s26pack_expansion_multi_tuple10testInline
+func testInline<each X: P, each Y: P>(_ x: (repeat each X), _ y: (repeat each Y)) {
     // This creates a tuple (repeat each X, repeat each Y) with two pack expansions
     // and passes it to Holder which expects (repeat each T)
     let h = Holder(values: (repeat each x, repeat each y))
     print(h)
 }
 
-func callTest() {
-    test((A(),), (A(),))
+// Test 2: Store multi-pack tuple in variable first, then pass it
+// This tests the case where the tuple is an RValue, not an inline expression
+// CHECK-LABEL: sil hidden [ossa] @$s26pack_expansion_multi_tuple10testStored
+func testStored<each X: P, each Y: P>(_ x: (repeat each X), _ y: (repeat each Y)) {
+    let combined: (repeat each X, repeat each Y) = (repeat each x, repeat each y)
+    let h = Holder(values: combined)
+    print(h)
+}
+
+// Test 3: Multi-pack tuple returned from helper function
+// CHECK-LABEL: sil hidden [ossa] @$s26pack_expansion_multi_tuple6concat
+func concat<each X: P, each Y: P>(
+    _ x: (repeat each X),
+    _ y: (repeat each Y)
+) -> (repeat each X, repeat each Y) {
+    return (repeat each x, repeat each y)
+}
+
+// CHECK-LABEL: sil hidden [ossa] @$s26pack_expansion_multi_tuple14testFromHelper
+func testFromHelper<each X: P, each Y: P>(_ x: (repeat each X), _ y: (repeat each Y)) {
+    let combined = concat(x, y)
+    let h = Holder(values: combined)
+    print(h)
+}
+
+func callTests() {
+    testInline((A(),), (A(),))
+    testStored((A(),), (A(),))
+    testFromHelper((A(),), (A(),))
 }
