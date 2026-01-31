@@ -832,8 +832,21 @@ bool AbstractionPattern::matchesPack(CanPackType substType) const {
     if (isTypeParameterOrOpaqueArchetype())
       return true;
     auto type = getType();
-    if (auto pack = dyn_cast<PackType>(type))
-      return (pack->getNumElements() == substType->getNumElements());
+    if (auto pack = dyn_cast<PackType>(type)) {
+      // Calculate the expected element count after expansion.
+      // Scalar elements contribute 1, pack expansions contribute their
+      // expanded component count.
+      size_t expectedCount = 0;
+      for (size_t i = 0; i < pack->getNumElements(); i++) {
+        auto eltPattern = getPackElementType(i);
+        if (eltPattern.isPackExpansion()) {
+          expectedCount += eltPattern.getNumPackExpandedComponents();
+        } else {
+          expectedCount += 1;
+        }
+      }
+      return expectedCount == substType->getNumElements();
+    }
     return false;
   }
   }

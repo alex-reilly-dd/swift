@@ -2955,6 +2955,17 @@ void SILCloner<ImplClass>::visitPackPackIndexInst(PackPackIndexInst *Inst) {
     getOpStructuralPackIndex(Inst->getIndexedPackType(),
                              Inst->getComponentStartIndex());
 
+  // If the pack expansion at the original index became empty after
+  // substitution, the computed index will be out of bounds. In this case,
+  // the pack pack index references a zero-length range and any code using
+  // it is dead. Map to undef and let DCE clean up.
+  if (newComponentStartIndex >= newPackType->getNumElements()) {
+    auto &F = getBuilder().getFunction();
+    auto packIndexType = SILType::getPackIndexType(F.getASTContext());
+    recordFoldedValue(Inst, SILUndef::get(F, packIndexType));
+    return;
+  }
+
   recordClonedInstruction(
       Inst, getBuilder().createPackPackIndex(loc, newComponentStartIndex,
                                              newIndexValue, newPackType));
