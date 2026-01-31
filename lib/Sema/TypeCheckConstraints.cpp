@@ -740,8 +740,27 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
       auto &requirement = requirements[reqIdx];
 
       switch (requirement.getKind()) {
-      case RequirementKind::SameShape:
-        llvm_unreachable("Same-shape requirement not supported here");
+      case RequirementKind::SameShape: {
+        // SameShape requirements relate two parameter packs.
+        // Handle similarly to SameType requirements.
+        auto lhsTy = requirement.getFirstType();
+        auto rhsTy = requirement.getSecondType();
+
+        // Unrelated requirement - neither side involves the types being defaulted.
+        if (!containsTypes(lhsTy) && !containsTypes(rhsTy))
+          continue;
+
+        // If both sides only mention in-scope generic parameters, record it.
+        if (!containsGenericParamsExcluding(lhsTy) &&
+            !containsGenericParamsExcluding(rhsTy)) {
+          recordRequirement(reqIdx, requirement, requirementBaseLocator);
+          continue;
+        }
+
+        // Mixed in-scope and out-of-scope parameters - diagnose error.
+        diagnoseInvalidRequirement(requirement);
+        return Type();
+      }
 
       case RequirementKind::SameType: {
         auto lhsTy = requirement.getFirstType();
