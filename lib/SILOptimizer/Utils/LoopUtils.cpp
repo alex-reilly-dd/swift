@@ -220,19 +220,6 @@ bool swift::canonicalizeAllLoops(DominanceInfo *DT, SILLoopInfo *LI) {
 }
 
 bool swift::canDuplicateLoopInstruction(SILLoop *L, SILInstruction *I, DeadEndBlocks *deb) {
-  // Handle stack allocations first, before the address projection check.
-  // Stack allocations produce addresses but don't need address projection
-  // analysis - they just need their deallocations to be inside the loop.
-  if (auto allocation = I->getStackAllocation()) {
-    for (auto *UI : allocation->getUses()) {
-      if (UI->getUser()->isDeallocatingStack()) {
-        if (!L->contains(UI->getUser()->getParent()))
-          return false;
-      }
-    }
-    return true;
-  }
-
   SinkAddressProjections sinkProj;
   for (auto res : I->getResults()) {
     // If a guaranteed value is used in a dead-end exit block and the enclosing value
