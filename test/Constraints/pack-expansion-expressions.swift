@@ -476,6 +476,122 @@ do {
   }
 }
 
+// Pack element type reference inside closure body within pack expansion.
+// The type repr is resolved during pack expansion constraint generation
+// while OuterExpansions is still set up.
+do {
+  func test<each U>(x: repeat each U) -> (repeat each U) {
+    return (repeat { 1 as! each U }()) // Ok - type repr resolved during pack expansion processing
+  }
+}
+
+// Deferred initialization of pack tuple variables.
+// When a variable with type (repeat each T) is declared separately from its
+// initialization, the reference has lvalue type @lvalue (repeat each T).
+// This should still work when passed to struct initializers or functions.
+do {
+  struct Container<each T> {
+    let values: (repeat each T)
+  }
+
+  func takeTuple<each T>(_ values: (repeat each T)) {}
+
+  // Deferred init + return struct
+  func test1<each U>(_ args: repeat each U) -> Container<repeat each U> {
+    let values: (repeat each U)
+    values = (repeat each args)
+    return Container(values: values) // Ok
+  }
+
+  // Deferred init + pass to function
+  func test2<each U>(_ args: repeat each U) {
+    let values: (repeat each U)
+    values = (repeat each args)
+    takeTuple(values) // Ok
+  }
+
+  // Conditional deferred init
+  func test3<each U>(_ args: repeat each U) -> Container<repeat each U> {
+    let values: (repeat each U)
+    if Bool.random() {
+      values = (repeat each args)
+    } else {
+      values = (repeat each args)
+    }
+    return Container(values: values) // Ok
+  }
+
+  // Deferred init + return tuple directly
+  func test4<each U>(_ args: repeat each U) -> (repeat each U) {
+    let values: (repeat each U)
+    values = (repeat each args)
+    return values // Ok
+  }
+}
+
+// Array append with nested pack expansion tuple as field type.
+do {
+  struct Container<each T: Sendable>: Sendable {
+    var failures: [(input: (repeat each T), error: any Error)] = []
+
+    mutating func addFailure(input: (repeat each T), error: any Error) {
+      failures.append((input: input, error: error)) // Ok
+    }
+  }
+}
+
+// For-in loop with tuple destructuring over array containing pack expansion tuple.
+do {
+  struct Container<each T: Sendable>: Sendable {
+    var failures: [(input: (repeat each T), error: any Error)] = []
+
+    func report() {
+      for (input, error) in failures { // Ok
+        print(input, error)
+      }
+    }
+
+    func reportEnumerated() {
+      for (index, (input, error)) in failures.enumerated() { // Ok
+        print(index, input, error)
+      }
+    }
+  }
+}
+
+// Overload resolution with pack generics and type mismatch should not crash.
+do {
+  struct Result<each Input>: Sendable {
+    let data: [(input: (repeat each Input), error: any Error)]
+  }
+
+  // Overload 1: with extra parameter
+  func process<each Input, each M>(
+    using mutators: repeat each M,
+    timeout: Duration = .seconds(60),
+    handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
+  ) async throws -> Result<repeat each Input> {
+    return Result(data: [])
+  }
+
+  // Overload 2: without extra parameter
+  func process<each Input>(
+    timeout: Duration = .seconds(60),
+    handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
+  ) async throws -> Result<repeat each Input> {
+    return Result(data: [])
+  }
+
+  // Type mismatch (Int vs Duration) with multiple pack closure params should diagnose, not crash.
+  func test() async throws {
+    let _ = try await process( // expected-error {{no exact matches in call to local function 'process'}}
+      timeout: 10
+    ) { (a: Int, b: Int) in
+      print(a, b)
+    }
+  }
+}
+
 // rdar://108904190 - top-level 'repeat' not allowed in single-expression closures
 func test_pack_expansion_to_void_conv_for_closure_result<each T>(x: repeat each T) {
   let _: () -> Void = { repeat print(each x) } // Ok
@@ -851,5 +967,35 @@ do {
 
   func foo(_ x: Int) {
     S { x }.foo() // Make sure we can pick the right 'foo' here.
+  }
+}
+
+// rdar://problem/XXXXXXXX - Pack expansion closure nested in outer closure with solver backtracking
+// Test that setCapturedExpansions doesn't crash when solver backtracks
+do {
+  func f<T>(_ x: T) -> [T] { [x] }
+
+  func test<each T>(_ input: repeat each T) {
+    let _ = {
+      (repeat { // expected-error {{pack expansion requires that '_' and 'each T' have the same shape}}
+        if Bool.random() {
+          return f(each input)
+        } else {
+          return (each input)
+        }
+      }())
+    }
+  }
+}
+
+// Test that pack element captures in closures inside pack expansions are
+// correctly propagated to the outer closure as pack captures.
+do {
+  func test<each T>(_ input: repeat each T) {
+    let _ = [0].map { idx in
+      (repeat {
+        return [(each input)]
+      }())
+    }
   }
 }

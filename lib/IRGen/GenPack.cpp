@@ -723,6 +723,23 @@ void IRGenFunction::withLocalStackPackAllocs(llvm::function_ref<void()> fn) {
   cleanupStackAllocPacks(*this, allocs);
 }
 
+void IRGenFunction::cleanupStackPackAllocsSince(size_t previousCount) {
+  if (OutstandingStackPackAllocs.size() <= previousCount)
+    return;
+
+  // Collect the new allocations (those made after previousCount)
+  SmallVector<StackPackAlloc, 4> newAllocs;
+  for (size_t i = previousCount; i < OutstandingStackPackAllocs.size(); ++i) {
+    newAllocs.push_back(OutstandingStackPackAllocs[i]);
+  }
+  // Remove them from the outstanding set
+  while (OutstandingStackPackAllocs.size() > previousCount) {
+    OutstandingStackPackAllocs.pop_back();
+  }
+  // Clean up in reverse order (LIFO)
+  cleanupStackAllocPacks(*this, newAllocs);
+}
+
 llvm::Value *irgen::emitWitnessTablePackRef(IRGenFunction &IGF,
                                             CanPackType packType,
                                             PackConformance *conformance) {
@@ -1198,12 +1215,13 @@ static unsigned getConstantLabelsLength(CanTupleType type) {
 
   for (auto elt : type->getElements()) {
     if (elt.getType()->is<PackExpansionType>()) {
-      assert(!elt.hasName());
+      // Pack expansion elements may have labels. If they do, we account for
+      // them separately in the dynamic calculation since the label is repeated
+      // for each expanded element.
       continue;
     }
 
     if (elt.hasName()) {
-      assert(!elt.getType()->is<PackExpansionType>());
       total += elt.getName().getLength();
     }
 
@@ -1233,12 +1251,25 @@ irgen::emitDynamicTupleTypeLabels(IRGenFunction &IGF, CanTupleType type,
   if (!hasLabels)
     return std::nullopt;
 
-  // Elements of pack expansion type are unlabeled, so the length of
-  // the label string is the number of elements in the pack, plus the
-  // sum of the lengths of the labels.
+  // Calculate the label length dynamically. For non-pack-expansion elements,
+  // we use the constant length. For pack expansion elements, each expanded
+  // element contributes either 1 byte (unlabeled) or (label_length + 1) bytes
+  // (labeled).
   llvm::Value *labelLength = llvm::ConstantInt::get(
       IGF.IGM.SizeTy, getConstantLabelsLength(type));
-  labelLength = IGF.Builder.CreateAdd(shapeExpression, labelLength);
+
+  // Add the contribution from pack expansion elements.
+  for (auto elt : type->getElements()) {
+    if (elt.getType()->is<PackExpansionType>()) {
+      unsigned perElementLength = elt.hasName()
+          ? (elt.getName().getLength() + 1)  // label + space
+          : 1;  // just space
+      auto *contribution = IGF.Builder.CreateMul(
+          shapeExpression,
+          llvm::ConstantInt::get(IGF.IGM.SizeTy, perElementLength));
+      labelLength = IGF.Builder.CreateAdd(labelLength, contribution);
+    }
+  }
 
   // Leave root for a null byte at the end.
   labelLength = IGF.Builder.CreateAdd(labelLength,
@@ -1276,20 +1307,80 @@ irgen::emitDynamicTupleTypeLabels(IRGenFunction &IGF, CanTupleType type,
                                               dynamicPosition, Size(1));
 
     // If we're looking at a pack expansion, insert the appropriate
-    // number of blank spaces in the dynamic label string.
+    // labels in the dynamic label string.
     if (isa<PackExpansionType>(eltTy)) {
-      assert(!elt.hasName() && "Pack expansions cannot have labels");
-      // Fill the dynamic label string with a blank label for each
-      // dynamic element.
-      IGF.Builder.CreateMemSet(
-          eltAddr, llvm::ConstantInt::get(IGF.IGM.Int8Ty, ' '),
-          dynamicLength);
+      if (elt.hasName()) {
+        // For labeled pack expansions, we need to emit the label for each
+        // expanded element. We do this by building a pattern string "label "
+        // and repeating it for each element.
+        auto labelName = elt.getName();
+        unsigned labelLen = labelName.getLength();
+        unsigned patternLen = labelLen + 1; // label + space
+
+        // Create the pattern string in a temporary buffer.
+        SmallString<32> pattern;
+        pattern.append(labelName.str());
+        pattern.push_back(' ');
+
+        // We need to emit the pattern for each element in the expansion.
+        // For now, use a loop to emit each label.
+        // TODO: Optimize by using memcpy with a pattern.
+
+        // Get the pattern as a global string.
+        auto *patternStr = IGF.IGM.getAddrOfGlobalString(pattern.str());
+
+        // Loop to emit the label for each element.
+        auto *loopEnd = IGF.createBasicBlock("labeled_pack_loop_end");
+        auto *loopBody = IGF.createBasicBlock("labeled_pack_loop_body");
+        auto *loopHeader = IGF.createBasicBlock("labeled_pack_loop_header");
+
+        // Get the current block before creating the branch.
+        auto *entryBlock = IGF.Builder.GetInsertBlock();
+
+        // Initialize loop counter to 0.
+        auto *zero = llvm::ConstantInt::get(IGF.IGM.SizeTy, 0);
+        IGF.Builder.CreateBr(loopHeader);
+
+        // Loop header: check if counter < dynamicLength
+        IGF.Builder.emitBlock(loopHeader);
+        auto *counter = IGF.Builder.CreatePHI(IGF.IGM.SizeTy, 2);
+        counter->addIncoming(zero, entryBlock);
+        auto *currDynPos = IGF.Builder.CreatePHI(IGF.IGM.SizeTy, 2);
+        currDynPos->addIncoming(dynamicPosition, entryBlock);
+
+        auto *done = IGF.Builder.CreateICmpEQ(counter, dynamicLength);
+        IGF.Builder.CreateCondBr(done, loopEnd, loopBody);
+
+        // Loop body: emit the pattern.
+        IGF.Builder.emitBlock(loopBody);
+        Address destAddr = IGF.Builder.CreateArrayGEP(labelString.getAddress(),
+                                                      currDynPos, Size(1));
+        Address srcAddr(patternStr, IGF.IGM.Int8Ty, Alignment(1));
+        IGF.Builder.CreateMemCpy(destAddr, srcAddr, Size(patternLen));
+
+        auto *one = llvm::ConstantInt::get(IGF.IGM.SizeTy, 1);
+        auto *nextCounter = IGF.Builder.CreateAdd(counter, one);
+        auto *patternLenVal = llvm::ConstantInt::get(IGF.IGM.SizeTy, patternLen);
+        auto *nextDynPos = IGF.Builder.CreateAdd(currDynPos, patternLenVal);
+        counter->addIncoming(nextCounter, loopBody);
+        currDynPos->addIncoming(nextDynPos, loopBody);
+        IGF.Builder.CreateBr(loopHeader);
+
+        // Loop end.
+        IGF.Builder.emitBlock(loopEnd);
+        dynamicPosition = currDynPos;
+
+        sawLabel = true;
+      } else {
+        // For unlabeled pack expansions, fill with blank spaces.
+        IGF.Builder.CreateMemSet(
+            eltAddr, llvm::ConstantInt::get(IGF.IGM.Int8Ty, ' '),
+            dynamicLength);
+        dynamicPosition = IGF.Builder.CreateAdd(dynamicPosition, dynamicLength);
+      }
 
       // We consumed one static label.
       staticPosition += 1;
-
-      // We produced some number of dynamic labels.
-      dynamicPosition = IGF.Builder.CreateAdd(dynamicPosition, dynamicLength);
 
       // We consumed an expansion.
       numExpansions += 1;

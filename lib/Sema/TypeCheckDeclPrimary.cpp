@@ -2999,19 +2999,6 @@ public:
     (void) ED->getGenericSignature();
     dumpGenericSignature(Ctx, ED);
 
-    // Temporary restriction until we figure out pattern matching and
-    // enum case construction with packs.
-    if (!ED->isSynthesized()) {
-      if (auto genericSig = ED->getGenericSignature()) {
-        for (auto paramTy : genericSig.getGenericParams()) {
-          if (paramTy->isParameterPack()) {
-            ED->diagnose(diag::enum_with_pack);
-            break;
-          }
-        }
-      }
-    }
-
     // FIXME: Remove this once we clean up the mess involving raw values.
     (void) ED->getInterfaceType();
 

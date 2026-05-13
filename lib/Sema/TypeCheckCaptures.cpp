@@ -423,11 +423,58 @@ public:
           capture.getDecl()->getDeclContext() == CurDC)
         continue;
 
-      // If the inner closure is nested in a PackExpansionExpr, it's
-      // PackElementExpr captures are not our captures.
-      if (capture.getPackElement() &&
-          !VisitingPackExpansionEnv.empty())
-        continue;
+      // If the inner closure is nested in a PackExpansionExpr, a
+      // PackElementExpr capture should be promoted to a capture of the
+      // underlying pack.
+      if (auto *packElement = capture.getPackElement()) {
+        if (!VisitingPackExpansionEnv.empty()) {
+          // Get the underlying pack reference from the pack element.
+          // We need to walk the expression to find any VarDecl references
+          // that need to be captured. This handles both simple cases like
+          // `each x` (where x is a VarDecl) and more complex cases like
+          // `each self.items` (where we need to capture self).
+          Expr *packRef = packElement->getPackRefExpr();
+          if (auto *materialize = dyn_cast<MaterializePackExpr>(packRef))
+            packRef = materialize->getFromExpr();
+
+          // Walk the expression to find all referenced VarDecls that need
+          // to be captured from enclosing scopes.
+          packRef->forEachChildExpr([&](Expr *E) -> Expr * {
+            if (auto *declRef = dyn_cast<DeclRefExpr>(E)) {
+              if (auto *var = dyn_cast<VarDecl>(declRef->getDecl())) {
+                // Check if this was captured from us.
+                if (var->getDeclContext() != CurDC) {
+                  // Compute adjusted flags.
+                  unsigned Flags = capture.getFlags();
+                  Flags &= ~CapturedValue::IsDirect;
+                  if (!NoEscape)
+                    Flags &= ~CapturedValue::IsNoEscape;
+
+                  addCapture(CapturedValue(var, Flags, capture.getLoc()));
+                }
+              }
+            }
+            return E;
+          });
+
+          // Also check the packRef itself if it's a DeclRefExpr
+          if (auto *declRef = dyn_cast<DeclRefExpr>(packRef)) {
+            if (auto *var = dyn_cast<VarDecl>(declRef->getDecl())) {
+              // Check if this was captured from us.
+              if (var->getDeclContext() != CurDC) {
+                // Compute adjusted flags.
+                unsigned Flags = capture.getFlags();
+                Flags &= ~CapturedValue::IsDirect;
+                if (!NoEscape)
+                  Flags &= ~CapturedValue::IsNoEscape;
+
+                addCapture(CapturedValue(var, Flags, capture.getLoc()));
+              }
+            }
+          }
+          continue;
+        }
+      }
 
       // Compute adjusted flags.
       unsigned Flags = capture.getFlags();

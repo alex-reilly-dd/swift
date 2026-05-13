@@ -3230,8 +3230,15 @@ MetadataResponse MetadataPath::followComponent(IRGenFunction &IGF,
       auto response = MetadataResponse::forBounded(argMetadata, argState);
 
       // Do a dynamic check if necessary to satisfy the request.
-      assert((requirement.isMetadata() || request.isSatisfiedBy(response)) &&
-             "checkTypeMetadataState for packs is currently unimplemented");
+      // For metadata packs, we cannot call emitCheckTypeMetadataState because
+      // the pack pointer is a TypeMetadataPtrPtr (pointer to array of metadata
+      // pointers), not a TypeMetadataPtr. Passing it to swift_checkMetadataState
+      // would cause a crash.
+      if (requirement.isMetadataPack()) {
+        assert(request.isSatisfiedBy(response) &&
+               "checkTypeMetadataState for packs is currently unimplemented");
+        return response;
+      }
       return emitCheckTypeMetadataState(IGF, request, response);
 
     // If this is a shape class, load the value.
@@ -4083,15 +4090,60 @@ irgen::emitGenericRequirementFromSubstitutions(IRGenFunction &IGF,
   CanType argType = depTy.subst(subs)->getCanonicalType();
 
   switch (requirement.getKind()) {
-  case GenericRequirement::Kind::Shape:
+  case GenericRequirement::Kind::Shape: {
+    // For pack archetypes, try to look up the shape directly from the outer context.
+    // This is needed for keypaths instantiated inside generic functions with pack parameters.
+    CanPackArchetypeType packArchetype;
+    if (auto directPackArchetype = dyn_cast<PackArchetypeType>(argType)) {
+      packArchetype = directPackArchetype;
+    } else if (auto packType = dyn_cast<PackType>(argType)) {
+      if (auto expansion = packType.unwrapSingletonPackExpansion()) {
+        packArchetype = dyn_cast<PackArchetypeType>(expansion.getPatternType());
+      }
+    }
+
+    if (packArchetype) {
+      auto kind = LocalTypeDataKind::forPackShapeExpression();
+      if (auto shape = IGF.tryGetLocalTypeData(packArchetype, kind)) {
+        return shape;
+      }
+    }
+
     return IGF.emitPackShapeExpression(argType);
+  }
 
   case GenericRequirement::Kind::Metadata:
     return IGF.emitTypeMetadataRef(argType, metadataState).getMetadata();
 
   case GenericRequirement::Kind::MetadataPack: {
-    auto metadata = IGF.emitTypeMetadataRef(argType, metadataState).getMetadata();
-    metadata = IGF.Builder.CreateBitCast(metadata, IGF.IGM.TypeMetadataPtrPtrTy);
+    llvm::Value *metadata = nullptr;
+
+    // For pack archetypes, try to directly use already-bound metadata from
+    // the outer generic context. This is needed for keypaths instantiated
+    // inside generic functions with pack parameters.
+    CanPackArchetypeType packArchetype;
+    if (auto directPackArchetype = dyn_cast<PackArchetypeType>(argType)) {
+      packArchetype = directPackArchetype;
+    } else if (auto packType = dyn_cast<PackType>(argType)) {
+      // Handle Pack{repeat each T} where T is a pack archetype
+      if (auto expansion = packType.unwrapSingletonPackExpansion()) {
+        packArchetype = dyn_cast<PackArchetypeType>(expansion.getPatternType());
+      }
+    }
+
+    if (packArchetype) {
+      if (auto result = IGF.tryGetLocalTypeMetadata(packArchetype,
+                                                    DynamicMetadataRequest(metadataState))) {
+        metadata = result.getMetadata();
+        metadata = IGF.Builder.CreateBitCast(metadata, IGF.IGM.TypeMetadataPtrPtrTy);
+      }
+    }
+
+    // Fall back to the general path if direct lookup failed
+    if (!metadata) {
+      metadata = IGF.emitTypeMetadataRef(argType, metadataState).getMetadata();
+      metadata = IGF.Builder.CreateBitCast(metadata, IGF.IGM.TypeMetadataPtrPtrTy);
+    }
 
     // FIXME: We should track if this pack is already known to be on the heap
     if (onHeapPacks) {
@@ -4110,8 +4162,55 @@ irgen::emitGenericRequirementFromSubstitutions(IRGenFunction &IGF,
 
   case GenericRequirement::Kind::WitnessTablePack: {
     auto conformance = subs.lookupConformance(depTy, requirement.getProtocol());
-    auto wtable = emitWitnessTableRef(IGF, argType, conformance);
-    wtable = IGF.Builder.CreateBitCast(wtable, IGF.IGM.WitnessTablePtrPtrTy);
+    llvm::Value *wtable = nullptr;
+
+    // For pack archetypes, try to directly use already-bound witness tables from
+    // the outer generic context. This is needed for keypaths instantiated
+    // inside generic functions with constrained pack parameters.
+    CanPackArchetypeType packArchetype;
+    if (auto directPackArchetype = dyn_cast<PackArchetypeType>(argType)) {
+      packArchetype = directPackArchetype;
+    } else if (auto packType = dyn_cast<PackType>(argType)) {
+      // Handle Pack{repeat each T} where T is a pack archetype
+      if (auto expansion = packType.unwrapSingletonPackExpansion()) {
+        packArchetype = dyn_cast<PackArchetypeType>(expansion.getPatternType());
+      }
+    }
+
+    if (packArchetype) {
+      // Try to look up an existing witness table pack from the outer context.
+      // The binding logic stores it with the unwrapped pattern conformance.
+      ProtocolConformanceRef patternConformance = conformance;
+      if (conformance.isPack()) {
+        auto patternConformances = conformance.getPack()->getPatternConformances();
+        if (patternConformances.size() == 1) {
+          patternConformance = patternConformances[0];
+        }
+      }
+
+      // Try with the pattern conformance first
+      auto concreteKind = LocalTypeDataKind::forProtocolWitnessTable(patternConformance);
+      if (auto existingWtable = IGF.tryGetLocalTypeData(packArchetype, concreteKind)) {
+        wtable = existingWtable;
+        wtable = IGF.Builder.CreateBitCast(wtable, IGF.IGM.WitnessTablePtrPtrTy);
+      }
+
+      // Also try with the abstract protocol witness table kind
+      if (!wtable) {
+        auto abstractKind = LocalTypeDataKind::forAbstractProtocolWitnessTable(
+            conformance.getProtocol());
+        if (auto existingWtable = IGF.tryGetLocalTypeData(packArchetype, abstractKind)) {
+          wtable = existingWtable;
+          wtable = IGF.Builder.CreateBitCast(wtable, IGF.IGM.WitnessTablePtrPtrTy);
+        }
+      }
+    }
+
+    // Fall back to the general path if direct lookup failed
+    if (!wtable) {
+      wtable = emitWitnessTableRef(IGF, argType, conformance);
+      wtable = IGF.Builder.CreateBitCast(wtable, IGF.IGM.WitnessTablePtrPtrTy);
+    }
 
     // FIXME: We should track if this pack is already known to be on the heap
     if (onHeapPacks) {
@@ -4631,15 +4730,11 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
         SmallVector<InverseRequirement, 2> inverses;
         signature->getRequirementsWithInverses(reqs, inverses);
 
-        auto flags = GenericEnvironmentFlags()
-          .withNumGenericParameterLevels(genericParamCounts.size())
-          .withNumGenericRequirements(reqs.size());
-
         ConstantStructBuilder fields = builder.beginStruct();
         fields.setPacked(true);
 
-        // Flags
-        fields.addInt32(flags.getIntValue());
+        // We'll fill in the flags after we know if there are packs.
+        auto flagsPlaceholder = fields.addPlaceholderWithSize(Int32Ty);
 
         // Parameter counts.
         for (auto count : genericParamCounts) {
@@ -4651,8 +4746,6 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
             irgen::addGenericParameters(*this, fields, signature, /*implicit=*/false);
         assert(metadata.NumParamsEmitted == metadata.NumParams &&
                "Implicit GenericParamDescriptors not supported here");
-        assert(metadata.GenericPackArguments.empty() &&
-               "We don't support packs here yet");
 
         // Need to pad the structure after generic parameters
         // up to four bytes because generic requirements that
@@ -4660,7 +4753,35 @@ llvm::Constant *IRGenModule::getAddrOfGenericEnvironment(
         fields.addAlignmentPadding(Alignment(4));
 
         // Generic requirements
-        irgen::addGenericRequirements(*this, fields, signature, reqs, inverses);
+        auto reqsMetadata =
+            irgen::addGenericRequirements(*this, fields, signature, reqs, inverses);
+
+        // Note: ShapeClasses are already populated by addGenericParameters()
+        // for each pack parameter, so we don't need to collect them again here.
+
+        // Emit pack shape header and descriptors if there are packs.
+        bool hasPacks = !metadata.GenericPackArguments.empty();
+        if (hasPacks) {
+          // GenericPackShapeHeader
+          fields.addInt16(metadata.GenericPackArguments.size()); // NumPacks
+          fields.addInt16(metadata.ShapeClasses.size()); // NumShapeClasses
+
+          // GenericPackShapeDescriptors
+          irgen::addGenericPackShapeDescriptors(
+              *this, fields, metadata.ShapeClasses,
+              metadata.GenericPackArguments);
+        }
+
+        // Now fill in the flags.
+        // Note: Use reqsMetadata.NumRequirements instead of reqs.size() because
+        // marker protocols (like Sendable) are not emitted as requirements.
+        auto flags = GenericEnvironmentFlags()
+          .withNumGenericParameterLevels(genericParamCounts.size())
+          .withNumGenericRequirements(reqsMetadata.NumRequirements)
+          .withHasPackShapeDescriptors(hasPacks);
+        fields.fillPlaceholderWithInt(flagsPlaceholder, Int32Ty,
+                                      flags.getIntValue());
+
         return fields.finishAndCreateFuture();
       });
 }

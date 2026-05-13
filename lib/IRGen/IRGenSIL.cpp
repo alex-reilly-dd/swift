@@ -7873,8 +7873,11 @@ void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
     Address argsBuf = dynamicArgsBuf->getAddress();
     
     if (!I->getSubstitutions().empty()) {
+      // Key paths can escape their creation context, so pack metadata
+      // must be heap-allocated to ensure it outlives the stack frame.
       emitInitOfGenericRequirementsBuffer(*this, requirements, argsBuf,
-                                          MetadataState::Complete, subs);
+                                          MetadataState::Complete, subs,
+                                          /*onHeapPacks=*/true);
     }
     
     for (unsigned i : indices(I->getAllOperands())) {

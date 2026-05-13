@@ -35,6 +35,7 @@
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILInstruction.h"
+#include "swift/SIL/SILUndef.h"
 #include "swift/SIL/Test.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
@@ -756,6 +757,11 @@ RegionAnalysisValueMap::getTrackableValueForActorIntroducingInst(
 
 std::optional<TrackableValueLookupResult>
 RegionAnalysisValueMap::tryToTrackValue(SILValue value) const {
+  // SILUndef has no defining instruction and is never assigned a region via
+  // AssignFresh, so tracking it would create a phantom element that causes
+  // assertion failures when Require ops reference it during dataflow.
+  if (isa<SILUndef>(value))
+    return {};
   auto state = getTrackableValue(value);
   if (state.value.isNonSendable() ||
       (state.base && state.base->isNonSendable()))

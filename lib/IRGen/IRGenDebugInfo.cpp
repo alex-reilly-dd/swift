@@ -91,9 +91,32 @@ namespace {
 using TrackingDIRefMap =
     llvm::DenseMap<const llvm::MDString *, llvm::TrackingMDNodeRef>;
 
-class EqualUpToClangTypes
-    : public CanTypeDifferenceVisitor<EqualUpToClangTypes> {
+/// FIXME: This class should be removed in favor of fixing ASTDemangler to wrap
+/// types in ExistentialType where appropriate and include Clang types.
+///
+/// This visitor compares canonical types while allowing certain known
+/// differences that arise during type mangling/demangling round-trips:
+/// 1. ExistentialType wrapper differences (one type has it, the other doesn't)
+/// 2. Clang type ExtInfo differences in function types
+class EqualUpToDebugDifferences
+    : public CanTypeDifferenceVisitor<EqualUpToDebugDifferences> {
 public:
+  // Handle the case where types have different TypeKinds.
+  // This allows ExistentialType wrappers to be ignored.
+  bool visitDifferentComponentTypes(CanType t1, CanType t2) {
+    // If one type is ExistentialType and the other is its constraint,
+    // compare them as equal.
+    if (auto existential1 = dyn_cast<ExistentialType>(t1)) {
+      return visit(existential1.getConstraintType(), t2);
+    }
+    if (auto existential2 = dyn_cast<ExistentialType>(t2)) {
+      return visit(t1, existential2.getConstraintType());
+    }
+    // Types have different kinds and neither is ExistentialType - not equal.
+    return true;
+  }
+
+  // Handle differences in non-type structure like function ExtInfo.
   bool visitDifferentTypeStructure(CanType t1, CanType t2) {
 #define COMPARE_UPTO_CLANG_TYPE(CLASS)                                         \
   if (auto f1 = dyn_cast<CLASS>(t1)) {                                         \
@@ -106,26 +129,11 @@ public:
 #undef COMPARE_UPTO_CLANG_TYPE
     return true;
   }
+
   bool check(Type t1, Type t2) {
     return !visit(t1->getCanonicalType(), t2->getCanonicalType());
   };
 };
-
-/// FIXME: This should be removed in favor of fixing ASTDemangler to wrap types in
-/// ExistentialType where appropriate.
-static bool equalWithoutExistentialTypes(Type t1, Type t2) {
-  static Type (*withoutExistentialTypes)(Type) = [](Type type) -> Type {
-    return type.transformRec([](TypeBase *type) -> std::optional<Type> {
-      if (auto existential = dyn_cast<ExistentialType>(type)) {
-        return withoutExistentialTypes(existential->getConstraintType());
-      }
-      return std::nullopt;
-    });
-  };
-
-  return withoutExistentialTypes(t1)
-      ->isEqual(withoutExistentialTypes(t2));
-}
 
 class IRGenDebugInfoImpl : public IRGenDebugInfo {
   const IRGenOptions &Opts;
@@ -1099,9 +1107,8 @@ private:
       } else if (!Reconstructed->isEqual(Ty) &&
                  // FIXME: Some existential types are reconstructed without
                  // an explicit ExistentialType wrapping the constraint.
-                 !equalWithoutExistentialTypes(Reconstructed, Ty) &&
-                 !EqualUpToClangTypes().check(Reconstructed, Ty)) {
-        // [FIXME: Include-Clang-type-in-mangling] Remove second check
+                 // Also, Clang types may differ. See EqualUpToDebugDifferences.
+                 !EqualUpToDebugDifferences().check(Reconstructed, Ty)) {
         ABORT([&](auto &out) {
           out << "Incorrect reconstructed type for " << SugaredName << "\n";
           out << "Original type:\n";

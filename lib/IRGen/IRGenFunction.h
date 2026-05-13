@@ -573,6 +573,15 @@ public:
 
   void withLocalStackPackAllocs(llvm::function_ref<void()> fn);
 
+  /// Returns the current number of outstanding stack pack allocations.
+  size_t getOutstandingStackPackAllocCount() const {
+    return OutstandingStackPackAllocs.size();
+  }
+
+  /// Cleanup any stack pack allocations made after the given count.
+  /// This is used to maintain LIFO order for task allocations in async calls.
+  void cleanupStackPackAllocsSince(size_t previousCount);
+
   /// Emit a load of a reference to the given Objective-C selector.
   llvm::Value *emitObjCSelectorRefLoad(StringRef selector);
 

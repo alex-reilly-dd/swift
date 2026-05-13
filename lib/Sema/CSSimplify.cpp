@@ -131,6 +131,16 @@ bool constraints::isPackExpansionType(Type type) {
   if (auto *typeVar = type->getAs<TypeVariableType>())
     return typeVar->getImpl().isPackExpansion();
 
+  // Check for lvalue wrapping a single-element pack expansion tuple.
+  // This handles deferred initialization where the variable has type
+  // @lvalue (repeat each T) - the tuple inside contains a pack expansion.
+  // We only do this for lvalue-wrapped types to avoid incorrectly treating
+  // (repeat each T) as a pack expansion when it appears as a field type
+  // within another tuple (e.g., in array append scenarios).
+  if (type->is<LValueType>()) {
+    return isSingleUnlabeledPackExpansionTuple(type);
+  }
+
   return false;
 }
 
@@ -6229,11 +6239,15 @@ bool ConstraintSystem::repairFailures(
             auto fnType = simplifyType(overload->adjustedOpenedType)
                               ->castTo<FunctionType>();
             auto paramIdx = argToParamElt->getParamIdx();
-            auto paramType = fnType->getParams()[paramIdx].getParameterType();
-            if (auto paramFnType = paramType->getAs<FunctionType>()) {
-              conversionsOrFixes.push_back(RemoveExtraneousArguments::create(
-                  *this, paramFnType, {}, loc));
-              break;
+            // Guard against out-of-bounds access when parameter index from
+            // one overload is used with a different overload during salvaging.
+            if (paramIdx < fnType->getNumParams()) {
+              auto paramType = fnType->getParams()[paramIdx].getParameterType();
+              if (auto paramFnType = paramType->getAs<FunctionType>()) {
+                conversionsOrFixes.push_back(RemoveExtraneousArguments::create(
+                    *this, paramFnType, {}, loc));
+                break;
+              }
             }
           }
         }
@@ -7402,21 +7416,36 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
   //
   // `LValueType`s are also ignored at this stage to avoid accidentally wrapping them. If they
   //  are valid wrapping targets, they will be tuple-wrapped after the lvalue is converted.
+  //
+  // We also handle single-element pack expansion tuples like `(repeat each T)`
+  // which contain concrete PackExpansionTypes rather than type variables.
+  // This is important for default argument inference where `(1)` flattens to
+  // `Int` and needs to match `(repeat each T)`.
   if (isTupleWithUnresolvedPackExpansion(origType1) ||
-      isTupleWithUnresolvedPackExpansion(origType2)) {
+      isTupleWithUnresolvedPackExpansion(origType2) ||
+      isSingleUnlabeledPackExpansionTuple(origType1) ||
+      isSingleUnlabeledPackExpansionTuple(origType2)) {
     auto isTypeVariableWrappedInOptional = [](Type type) {
       if (type->getOptionalObjectType()) {
         return type->lookThroughAllOptionalTypes()->isTypeVariableOrMember();
       }
       return false;
     };
+    // Don't wrap Optional types - they should be handled by optional injection
+    auto isOptionalType = [](Type type) {
+      return bool(type->getOptionalObjectType());
+    };
     if (isa<TupleType>(desugar1) != isa<TupleType>(desugar2) &&
         !isa<InOutType>(desugar1) && !isa<InOutType>(desugar2) &&
         !isa<LValueType>(desugar1) && !isa<LValueType>(desugar2) &&
         !isTypeVariableWrappedInOptional(desugar1) &&
         !isTypeVariableWrappedInOptional(desugar2) &&
+        !isOptionalType(desugar1) &&
+        !isOptionalType(desugar2) &&
         !desugar1->isAny() &&
-        !desugar2->isAny()) {
+        !desugar2->isAny() &&
+        !desugar1->isUninhabited() &&
+        !desugar2->isUninhabited()) {
       return matchTypes(
           desugar1->is<TupleType>() ? type1
                                     : TupleType::get({type1}, getASTContext()),
@@ -8366,6 +8395,23 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         }
       }
     }
+  }
+
+  // Handle the case where one side is an lvalue wrapping a single-element
+  // pack expansion tuple and the other is a pack expansion. This occurs with
+  // deferred initialization of pack tuple variables:
+  //   let values: (repeat each U)
+  //   values = (repeat each args)
+  //   Container(values: values)  // 'values' is @lvalue (repeat each U)
+  // Here we match @lvalue (repeat each U) against repeat each T, which should
+  // succeed by unwrapping the lvalue and tuple to get the inner pack expansion.
+  if (isSingleUnlabeledPackExpansionTuple(type1) && type2->is<PackExpansionType>()) {
+    auto innerType = type1->getRValueType()->castTo<TupleType>()->getElementType(0);
+    return matchTypes(innerType, type2, kind, subflags, locator);
+  }
+  if (type1->is<PackExpansionType>() && isSingleUnlabeledPackExpansionTuple(type2)) {
+    auto innerType = type2->getRValueType()->castTo<TupleType>()->getElementType(0);
+    return matchTypes(type1, innerType, kind, subflags, locator);
   }
 
   // Matching types where one side is a pack expansion and the other is not

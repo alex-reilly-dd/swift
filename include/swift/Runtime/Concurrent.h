@@ -440,7 +440,14 @@ private:
       auto headerSize = offsetof(ElementStorage, Elem);
       auto size = goodSize(headerSize + capacity * sizeof(ElemTy));
 
-      auto *ptr = reinterpret_cast<ElementStorage *>(malloc(size));
+      // Zero-initialize the storage. This is required so that concurrent
+      // readers walking a snapshot of the indices observe a well-defined
+      // (zero) state for slots that the writer has not yet populated rather
+      // than uninitialized garbage. For HashMapElementWrapper-backed maps
+      // (used by the metadata caches), zero means the wrapper's Ptr is null,
+      // which matchesKey treats as "no match" and skips, preventing a crash
+      // from dereferencing a not-yet-published entry.
+      auto *ptr = reinterpret_cast<ElementStorage *>(calloc(1, size));
       if (!ptr)
         swift::crash("Could not allocate memory.");
 
@@ -826,15 +833,40 @@ public:
 
 /// A wrapper type for indirect hash map elements. Stores a pointer to the real
 /// element and forwards key matching and hashing.
+///
+/// Ptr is published by the writer with a release store, so a concurrent reader
+/// walking a snapshot of the indices may briefly observe the wrapper before
+/// the writer has finished publishing the pointer. matchesKey loads Ptr with
+/// acquire ordering and treats a null pointer as "not a match" rather than
+/// dereferencing it; the slot will appear as the matching entry on a later
+/// lookup once publication is observed.
 template <class ElemTy> struct HashMapElementWrapper {
-  ElemTy *Ptr;
+  std::atomic<ElemTy *> Ptr;
+
+  HashMapElementWrapper() : Ptr(nullptr) {}
+
+  // std::atomic deletes its copy operations, but the surrounding hash map
+  // copies wrappers when growing the elements storage. The growing path runs
+  // under the writer lock; a relaxed copy is sufficient because the visibility
+  // to readers is established by the seq_cst store of the new Elements
+  // pointer.
+  HashMapElementWrapper(const HashMapElementWrapper &other)
+      : Ptr(other.Ptr.load(std::memory_order_relaxed)) {}
+  HashMapElementWrapper &operator=(const HashMapElementWrapper &other) {
+    Ptr.store(other.Ptr.load(std::memory_order_relaxed),
+              std::memory_order_relaxed);
+    return *this;
+  }
 
   template <class KeyTy> bool matchesKey(const KeyTy &key) {
-    return Ptr->matchesKey(key);
+    auto *ptr = Ptr.load(std::memory_order_acquire);
+    if (!ptr)
+      return false;
+    return ptr->matchesKey(key);
   }
 
   friend llvm::hash_code hash_value(const HashMapElementWrapper &wrapper) {
-    return hash_value(*wrapper.Ptr);
+    return hash_value(*wrapper.Ptr.load(std::memory_order_acquire));
   }
 };
 
@@ -868,8 +900,17 @@ struct StableAddressConcurrentReadableHashMap
       // never be able to collect garbage.
       auto snapshot = this->snapshot();
       if (auto wrapper = snapshot.find(key)) {
-        LastFound.store(wrapper->Ptr, std::memory_order_relaxed);
-        return {wrapper->Ptr, false};
+        // matchesKey already returned true, so the wrapper's Ptr was
+        // observed non-null with acquire ordering. Reload it the same way
+        // here so the value we cache and return reflects that publication.
+        auto *foundPtr = wrapper->Ptr.load(std::memory_order_acquire);
+        if (foundPtr) {
+          LastFound.store(foundPtr, std::memory_order_relaxed);
+          return {foundPtr, false};
+        }
+        // The wrapper's Ptr was published between matchesKey and our load,
+        // or we hit a transient null. Fall through to the locked path which
+        // will resolve unambiguously.
       }
     }
 
@@ -886,9 +927,18 @@ struct StableAddressConcurrentReadableHashMap
                 sizeof(ElemTy) + ElemTy::getExtraAllocationSize(key, args...);
             void *memory = Allocator().Allocate(allocSize, alignof(ElemTy));
             new (memory) ElemTy(key, std::forward<ArgTys>(args)...);
-            wrapper->Ptr = reinterpret_cast<ElemTy *>(memory);
+            // Publish the entry with release ordering. Concurrent readers
+            // walking the indices may observe the wrapper before this store
+            // is visible; pairing this release with the acquire load in
+            // matchesKey ensures readers either see the published pointer or
+            // skip the slot, never dereferencing a null Ptr.
+            wrapper->Ptr.store(reinterpret_cast<ElemTy *>(memory),
+                               std::memory_order_release);
+            ptr = reinterpret_cast<ElemTy *>(memory);
+          } else {
+            // Existing entry; the writer lock guarantees Ptr is non-null.
+            ptr = wrapper->Ptr.load(std::memory_order_relaxed);
           }
-          ptr = wrapper->Ptr;
           outerCreated = created;
           return true; // Keep the new entry.
         });
@@ -901,7 +951,7 @@ struct StableAddressConcurrentReadableHashMap
     auto result = snapshot.find(key);
     if (!result)
       return nullptr;
-    return result->Ptr;
+    return result->Ptr.load(std::memory_order_acquire);
   }
 
 private:

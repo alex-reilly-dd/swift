@@ -544,4 +544,69 @@ TEST(ConcurrentReadableHashMapTest, MultiThreaded4) {
   runTest(16, 1);
   runTest(16, 8);
 }
+
+// A heap-allocated entry mirroring how StableAddressConcurrentReadableHashMap
+// is used by the metadata cache: the entry stores key data inline and is
+// referred to indirectly via HashMapElementWrapper<T>::Ptr.
+struct StableEntry {
+  int threadNumber;
+  int n;
+
+  StableEntry(MultiThreadedKey key) : threadNumber(key.threadNumber), n(key.n) {}
+
+  bool matchesKey(const MultiThreadedKey &key) const {
+    return threadNumber == key.threadNumber && n == key.n;
+  }
+
+  friend llvm::hash_code hash_value(const StableEntry &value) {
+    return llvm::hash_combine(value.threadNumber, value.n);
+  }
+
+  static size_t getExtraAllocationSize(const MultiThreadedKey &) { return 0; }
+};
+
+struct StableEntryAllocator {
+  void *Allocate(size_t size, size_t align) {
+    // aligned_alloc requires size to be a multiple of align.
+    size_t roundedSize = (size + align - 1) & ~(align - 1);
+    return aligned_alloc(align, roundedSize);
+  }
+};
+
+// Stress test for StableAddressConcurrentReadableHashMap. This is the variant
+// used by the metadata caches: it stores HashMapElementWrapper<T> entries
+// pointing to separately-allocated stable-address payloads. A race in the
+// publish path between writers and readers can lead to a reader observing a
+// wrapper whose Ptr field is still null, causing a crash in matchesKey.
+TEST(StableAddressConcurrentReadableHashMapTest, MultiThreadedGetOrInsert) {
+  // Many threads concurrently call getOrInsert with the same set of keys.
+  // Most calls find an existing entry; a few insert. The keys overlap across
+  // threads so each insert is racing many concurrent reader snapshots.
+  const int keyCount = 200;
+  const int iterations = 20000;
+
+  auto runTest = [&](int threadCount) {
+    StableAddressConcurrentReadableHashMap<StableEntry, StableEntryAllocator>
+        map;
+
+    threadedExecute(threadCount, [&](int threadNumber) {
+      for (int i = 0; i < iterations; i++) {
+        // Cycle keys so threads contend on the same entries repeatedly while
+        // also continuously inserting new ones.
+        MultiThreadedKey key{0, i % keyCount};
+        auto result = map.getOrInsert(key);
+        ASSERT_NE(result.first, nullptr);
+        // The returned entry must match the key — if we observed a wrapper
+        // with a stale/null Ptr we would have crashed by now.
+        ASSERT_TRUE(result.first->matchesKey(key));
+      }
+    });
+
+    ASSERT_FALSE(map.hasActiveReaders());
+  };
+
+  runTest(2);
+  runTest(8);
+  runTest(16);
+}
 #endif // !SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY

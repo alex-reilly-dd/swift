@@ -15,6 +15,8 @@
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/GenericSignature.h"
+#include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/PackConformance.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/Types.h"
@@ -1238,11 +1240,124 @@ static bool isNonGenericThunkOfGenericExternalFunction(SILFunction *thunk) {
   return false;
 }
 
+/// Try to resolve a witness_method on an opened pack element to a concrete
+/// type and conformance. Returns true if successful.
+static bool tryResolveConcretePackElementConformance(
+    WitnessMethodInst *wmi,
+    CanType &concreteType,
+    ProtocolConformanceRef &concreteConformance) {
+
+  // 1. Check if lookup type is an ElementArchetypeType
+  auto *elementArchetype = dyn_cast<ElementArchetypeType>(wmi->getLookupType().getPointer());
+  if (!elementArchetype)
+    return false;
+
+  // 2. Find the open_pack_element via type-dependent operands
+  OpenPackElementInst *openPackElement = nullptr;
+  for (auto &operand : wmi->getTypeDependentOperands()) {
+    if (auto *ope = dyn_cast<OpenPackElementInst>(operand.get())) {
+      if (ope->getOpenedGenericEnvironment() == elementArchetype->getGenericEnvironment()) {
+        openPackElement = ope;
+        break;
+      }
+    }
+  }
+  if (!openPackElement)
+    return false;
+
+  // 3. Check if pack index is a constant index
+  unsigned index;
+  CanPackType packType;
+
+  if (auto *scalarIndex = dyn_cast<ScalarPackIndexInst>(openPackElement->getIndexOperand())) {
+    index = scalarIndex->getComponentIndex();
+    packType = scalarIndex->getIndexedPackType();
+  } else if (auto *dynamicIndex = dyn_cast<DynamicPackIndexInst>(openPackElement->getIndexOperand())) {
+    // Handle dynamic_pack_index with a constant integer literal operand
+    auto *intLiteral = dyn_cast<IntegerLiteralInst>(dynamicIndex->getOperand());
+    if (!intLiteral)
+      return false;  // Cannot devirtualize truly dynamic indices
+
+    auto indexValue = intLiteral->getValue();
+    if (indexValue.getActiveBits() > 32)
+      return false;  // Index too large
+
+    index = indexValue.getZExtValue();
+    packType = dynamicIndex->getIndexedPackType();
+  } else {
+    return false;  // Unknown pack index type
+  }
+
+  // 4. Validate index and get element type
+  if (index >= packType->getNumElements())
+    return false;
+
+  auto elementType = packType.getElementType(index);
+
+  // Skip pack expansion elements (not scalar)
+  if (isa<PackExpansionType>(elementType))
+    return false;
+
+  // Must be fully concrete (no archetypes or type parameters)
+  if (elementType->hasArchetype() || elementType->hasTypeParameter())
+    return false;
+
+  // 5. Get the pack conformance from the OpenPackElementInst's generic environment
+  auto *genericEnv = openPackElement->getOpenedGenericEnvironment();
+  auto outerSubs = genericEnv->getOuterSubstitutions();
+
+  // Look up the conformance for the shape class (the pack parameter) to the protocol
+  auto shapeClass = genericEnv->getOpenedElementShapeClass();
+  auto *protocol = wmi->getLookupProtocol();
+
+  auto packConformanceRef = outerSubs.lookupConformance(shapeClass, protocol);
+  if (!packConformanceRef.isPack())
+    return false;
+
+  auto *packConformance = packConformanceRef.getPack();
+
+  // 6. Get conformance for this specific element
+  auto patternConformances = packConformance->getPatternConformances();
+  if (index >= patternConformances.size())
+    return false;
+
+  auto elementConformance = patternConformances[index];
+  if (!elementConformance.isConcrete())
+    return false;
+
+  concreteType = elementType->getCanonicalType();
+  concreteConformance = elementConformance;
+  return true;
+}
+
 static bool canDevirtualizeWitnessMethod(ApplySite applySite, bool isMandatory) {
   SILFunction *f;
   SILWitnessTable *wt;
 
   auto *wmi = cast<WitnessMethodInst>(applySite.getCallee());
+
+  // Try pack element devirtualization
+  CanType concreteType;
+  ProtocolConformanceRef concreteConformance;
+  if (tryResolveConcretePackElementConformance(wmi, concreteType, concreteConformance)) {
+    std::tie(f, wt) = applySite.getModule().lookUpFunctionInWitnessTable(
+        concreteConformance, wmi->getMember(),
+        wmi->isSpecialized(), SILModule::LinkingMode::LinkAll);
+    if (!f)
+      return false;
+
+    // Apply standard validation checks (fragile ref, try_apply, etc.)
+    if (!isMandatory &&
+        applySite.getFunction()->isAnySerialized() &&
+        !f->hasValidLinkageForFragileRef(applySite.getFunction()->getSerializedKind()))
+      return false;
+
+    if (!f->getLoweredFunctionType()->hasErrorResult() &&
+        isa<TryApplyInst>(applySite.getInstruction()))
+      return false;
+
+    return true;
+  }
 
   // Handle vanishing tuples: don't devirtualize a call to a tuple conformance
   // if the lookup type can possibly be unwrapped after substitution.
@@ -1359,10 +1474,25 @@ swift::tryDevirtualizeWitnessMethod(SILPassManager *pm, ApplySite applySite,
   if (!canDevirtualizeWitnessMethod(applySite, isMandatory))
     return {ApplySite(), false};
 
+  auto *wmi = cast<WitnessMethodInst>(applySite.getCallee());
+
+  // Try pack element devirtualization
+  CanType concreteType;
+  ProtocolConformanceRef concreteConformance;
+  if (tryResolveConcretePackElementConformance(wmi, concreteType, concreteConformance)) {
+    auto [f, wt] = applySite.getModule().lookUpFunctionInWitnessTable(
+        concreteConformance, wmi->getMember(),
+        wmi->isSpecialized(), SILModule::LinkingMode::LinkAll);
+
+    if (!f)
+      return {ApplySite(), false};
+
+    // Reuse existing devirtualizeWitnessMethod with the concrete conformance
+    return devirtualizeWitnessMethod(pm, applySite, f, concreteConformance, ore);
+  }
+
   SILFunction *f;
   SILWitnessTable *wt;
-
-  auto *wmi = cast<WitnessMethodInst>(applySite.getCallee());
 
   std::tie(f, wt) = lookUpFunctionInWitnessTable(wmi, SILModule::LinkingMode::LinkAll);
 
