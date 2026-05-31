@@ -3210,37 +3210,6 @@ bool ConstraintSystem::diagnoseAmbiguityWithFixes(
                         *this, contextualFixes, fixes.getArrayRef()))
     return true;
 
-  // Fallback: if all solutions have a fix of the same kind but at different
-  // locators, we should still diagnose. This handles cases like @Sendable
-  // mismatches where the fix can appear at different points in the constraint
-  // system depending on how constraints are resolved.
-  if (!diagnosed) {
-    llvm::MapVector<FixKind, SmallVector<FixInContext, 4>> fixesByKindOnly;
-    for (const auto &entry : fixes) {
-      fixesByKindOnly[entry.second->getKind()].push_back(entry);
-    }
-
-    for (const auto &entry : fixesByKindOnly) {
-      auto kind = entry.first;
-      auto &aggregate = entry.second;
-
-      // Check if every solution has at least one fix of this kind.
-      if (llvm::all_of(solutions, [kind](const Solution &solution) -> bool {
-            return llvm::any_of(
-                solution.Fixes, [kind](const ConstraintFix *fix) -> bool {
-                  return fix->getKind() == kind;
-                });
-          })) {
-        // Diagnose using the first fix. This may not give the most precise
-        // location, but it's better than failing to produce any diagnostic.
-        diagnosed |= aggregate.front().second->diagnose(
-            *aggregate.front().first, /*asNote=*/false);
-        if (diagnosed)
-          break;
-      }
-    }
-  }
-
   return diagnosed;
 }
 
