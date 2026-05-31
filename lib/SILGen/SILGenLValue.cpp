@@ -3947,7 +3947,27 @@ LValue SILGenLValue::visitPackElementExpr(PackElementExpr *e,
     auto elementTy =
       SGF.getLoweredType(substFormalType).getAddressType();
     auto tupleAddr = activeExpansion->MaterializedPacks.find(packExpr);
+
+    // The materialized tuple may contain concrete elements alongside the pack
+    // expansion (e.g. `(String, repeat each U)` for `tuple.1`). The active
+    // expansion's index only indexes the expansion itself, so compose it into
+    // an index over the tuple's full induced pack type; otherwise the pack
+    // lengths disagree (`Pack{repeat each U}` vs `Pack{String, repeat each U}`).
     auto packIndex = activeExpansion->ExpansionIndex;
+    auto tupleType = tupleAddr->second->getType().castTo<TupleType>();
+    auto inducedPackType = tupleType.getInducedPackType();
+    if (inducedPackType->getNumElements() != 1) {
+      unsigned componentIndex = 0;
+      for (auto n = inducedPackType->getNumElements();
+           componentIndex != n; ++componentIndex) {
+        if (isa<PackExpansionType>(
+                inducedPackType.getElementType(componentIndex)))
+          break;
+      }
+      packIndex = SGF.B.createPackPackIndex(e, componentIndex, packIndex,
+                                            inducedPackType);
+    }
+
     auto elementAddr =
       SGF.B.createTuplePackElementAddr(e, packIndex, tupleAddr->second, elementTy);
     return LValue::forAddress(accessKind, ManagedValue::forLValue(elementAddr),

@@ -169,6 +169,32 @@ Type constraints::getPatternTypeOfSingleUnlabeledPackExpansionTuple(Type type) {
   return {};
 }
 
+/// If \p type is a tuple containing exactly one pack-expansion element, and
+/// that element is unlabeled, return its pattern type. The tuple may contain
+/// other concrete elements at any position (e.g. `([UInt8], repeat each U)`).
+/// Returns null otherwise. File-local to avoid touching the shared header.
+static Type getPatternTypeOfUniquePackExpansionTupleElement(Type type) {
+  auto *tuple = type->getRValueType()->getAs<TupleType>();
+  if (!tuple)
+    return {};
+
+  Type patternType;
+  for (unsigned i = 0, n = tuple->getNumElements(); i != n; ++i) {
+    const auto &elt = tuple->getElement(i);
+    if (auto *expansion = elt.getType()->getAs<PackExpansionType>()) {
+      // Only an unlabeled pack-expansion element can be materialized by
+      // positional access for now.
+      if (elt.hasName())
+        return {};
+      // More than one pack expansion: ambiguous, bail out.
+      if (patternType)
+        return {};
+      patternType = expansion->getPatternType();
+    }
+  }
+  return patternType;
+}
+
 bool constraints::containsPackExpansionType(ArrayRef<AnyFunctionType::Param> params) {
   return llvm::any_of(params, [&](const auto &param) {
     return isPackExpansionType(param.getPlainType());
@@ -10308,6 +10334,29 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
       }
 
       if (fieldIdx != -1) {
+        // Selecting the (unique, unlabeled) pack-expansion element of a tuple
+        // materializes a pack, so that `repeat each tuple.N` can expand it.
+        // This generalizes the deprecated `.element` member (above) to any
+        // element position in a mixed tuple, e.g. `([UInt8], repeat each U).1`.
+        const auto &selectedElt = baseTuple->getElement(fieldIdx);
+        if (isPackExpansionType(selectedElt.getType()) &&
+            !selectedElt.hasName()) {
+          // If the pack expansion still involves type variables, its shape
+          // can't be computed yet. Delay until it resolves: it may become a
+          // concrete tuple (where `.N` is ordinary element indexing) or an
+          // abstract pack (where we materialize). Mirrors the single-element
+          // pack tuple guard above.
+          if (selectedElt.getType()->hasTypeVariable()) {
+            result.OverallResult = MemberLookupResult::Unsolved;
+            return result;
+          }
+          if (getPatternTypeOfUniquePackExpansionTupleElement(baseTuple)) {
+            result.ViableCandidates.push_back(
+                OverloadChoice(baseTy, OverloadChoiceKind::MaterializePack));
+            return result;
+          }
+        }
+
         // Add an overload set that selects this field.
         result.ViableCandidates.push_back(OverloadChoice(baseTy, fieldIdx));
         return result;
