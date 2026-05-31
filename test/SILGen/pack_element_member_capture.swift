@@ -1,4 +1,4 @@
-// RUN: %target-swift-emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-emit-silgen %s -target %target-swift-5.9-abi-triple | %FileCheck %s
 
 // Test that pack element captures that reference member expressions correctly
 // capture the base variable (e.g., self) in enclosing closures.

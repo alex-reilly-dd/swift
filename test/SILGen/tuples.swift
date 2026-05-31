@@ -147,10 +147,12 @@ extension P {
   // CHECK:   [[RVALUE:%.*]] = alloc_stack [lexical] [var_decl] $(index: C, value: Self), let, name "tuple"
   //
   // Initialize the RValue. (This is here to help pattern matching).
+  // The element addresses are projected up-front (the tuple initialization is
+  // split into per-element initializations before the stores are emitted).
   // CHECK:   [[ZERO_ADDR:%.*]] = tuple_element_addr [[RVALUE]] : $*(index: C, value: Self), 0
+  // CHECK:   [[ONE_ADDR:%.*]] = tuple_element_addr [[RVALUE]] : $*(index: C, value: Self), 1
   // CHECK:   [[TUP0_COPY:%.*]] = copy_value [[TUP0]]
   // CHECK:   store [[TUP0_COPY]] to [init] [[ZERO_ADDR]]
-  // CHECK:   [[ONE_ADDR:%.*]] = tuple_element_addr [[RVALUE]] : $*(index: C, value: Self), 1
   // CHECK:   copy_addr [[TUP1]] to [init] [[ONE_ADDR]]
   //
   // What we are actually trying to check. Note that there is no actual use of

@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen %s -target %target-swift-5.9-abi-triple | %FileCheck %s
 
 // This test verifies that closures with parameter types using pack generics
 // from an enclosing context compile without crashing.
@@ -42,8 +42,8 @@ struct Processor<each P: Plugin> {
     }
 }
 
-// CHECK-LABEL: sil hidden [ossa] @$s28pack_closure_parameter_crash12testComplexyyF
-// CHECK: } // end sil function '$s28pack_closure_parameter_crash12testComplexyyF'
+// CHECK-LABEL: sil hidden [ossa] @$s28pack_closure_parameter_crash11testComplexyyF
+// CHECK: } // end sil function '$s28pack_closure_parameter_crash11testComplexyyF'
 func testComplex() {
     let p = Processor(plugins: (MyPlugin(),))
     p.process(event: Box<Int, String>()) { _ in }

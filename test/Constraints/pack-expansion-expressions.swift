@@ -561,12 +561,12 @@ do {
 
 // Overload resolution with pack generics and type mismatch should not crash.
 do {
-  struct Result<each Input>: Sendable {
-    let data: [(input: (repeat each Input), error: any Error)]
+  struct Result<each Input>: Sendable { // expected-note {{consider making generic parameter 'each Input' conform to the 'Sendable' protocol}}
+    let data: [(input: (repeat each Input), error: any Error)] // expected-warning {{stored property 'data' of 'Sendable'-conforming generic struct 'Result' contains non-Sendable type 'each Input'; this is an error in the Swift 6 language mode}}
   }
 
   // Overload 1: with extra parameter
-  func process<each Input, each M>(
+  func process<each Input, each M>( // expected-note {{candidate expects value of type 'Duration' for parameter #2 (got 'Int')}}
     using mutators: repeat each M,
     timeout: Duration = .seconds(60),
     handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
@@ -575,7 +575,7 @@ do {
   }
 
   // Overload 2: without extra parameter
-  func process<each Input>(
+  func process<each Input>( // expected-note {{candidate expects value of type 'Duration' for parameter #1 (got 'Int')}}
     timeout: Duration = .seconds(60),
     handler: @escaping @Sendable ((repeat each Input)) async throws -> Void
   ) async throws -> Result<repeat each Input> {

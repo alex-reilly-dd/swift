@@ -7457,7 +7457,11 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       }
       return false;
     };
-    // Don't wrap Optional types - they should be handled by optional injection
+    // Don't wrap into a one-element tuple when the conversion *target* (the
+    // second type) is an Optional: that case is handled by optional injection
+    // (e.g. returning `(repeat each T)` where `(repeat each T)?` is expected).
+    // An Optional on the source side is still wrappable — e.g. an `Int?`
+    // argument binding the inferred pack of a `(repeat each C)` parameter.
     auto isOptionalType = [](Type type) {
       return bool(type->getOptionalObjectType());
     };
@@ -7466,7 +7470,6 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         !isa<LValueType>(desugar1) && !isa<LValueType>(desugar2) &&
         !isTypeVariableWrappedInOptional(desugar1) &&
         !isTypeVariableWrappedInOptional(desugar2) &&
-        !isOptionalType(desugar1) &&
         !isOptionalType(desugar2) &&
         !desugar1->isAny() &&
         !desugar2->isAny() &&
