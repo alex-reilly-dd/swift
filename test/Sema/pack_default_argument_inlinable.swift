@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -typecheck %s
+// RUN: %target-swift-frontend -typecheck %s -target %target-swift-5.9-abi-triple
 
 // Test that @inlinable functions with parameter pack default arguments
 // work correctly. This tests SameShape requirement handling in
