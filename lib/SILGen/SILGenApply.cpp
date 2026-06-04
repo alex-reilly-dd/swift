@@ -3997,9 +3997,20 @@ private:
          ++componentIndex) {
       auto elementType = substTupleType.getElementType(componentIndex);
 
-      // Skip non-pack-expansion elements (concrete types mixed with expansions)
-      if (!isa<PackExpansionType>(elementType))
+      // A concrete (non-expansion) element mixed in with pack expansions still
+      // occupies a single fixed slot in the pack. Project the tuple element's
+      // address into that slot directly — there's no expansion to loop over.
+      // Skipping it (as we used to) left the pack slot uninitialized, so the
+      // callee read a garbage element address.
+      if (!isa<PackExpansionType>(elementType)) {
+        SILType eltTy = packTy->getSILElementType(componentIndex);
+        auto packIndex =
+            SGF.B.createScalarPackIndex(loc, componentIndex, formalPackType);
+        auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
+            loc, packIndex, tupleValue.getValue(), eltTy);
+        SGF.B.createPackElementSet(loc, tupleEltAddr, packIndex, pack);
         continue;
+      }
 
       // Get the lowered pack expansion type from the SIL pack type.
       SILType packExpansionTy = packTy->getSILElementType(componentIndex);

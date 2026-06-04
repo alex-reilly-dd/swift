@@ -898,6 +898,22 @@ namespace {
         return SGF.B.createTupleExtract(loc, base, ElementIndex);
       }
 
+      // If the tuple contains a pack expansion its layout is dynamic, so a
+      // fixed-offset `tuple_element_addr` is invalid even for a concrete
+      // (non-expansion) element. Project the element through a structural pack
+      // index into the tuple's induced pack type instead (mirrors the
+      // destructuring path in SILGenDecl). A static `TupleElementExpr` always
+      // names a scalar element, so a scalar pack index is well-formed here.
+      auto baseTupleType = base.getType().castTo<TupleType>();
+      if (baseTupleType->containsPackExpansionType()) {
+        auto packIndex = SGF.B.createScalarPackIndex(
+            loc, ElementIndex, baseTupleType.getInducedPackType());
+        auto Res = SGF.B.createTuplePackElementAddr(
+            loc, packIndex, base.getValue(),
+            getTypeOfRValue().getAddressType());
+        return ManagedValue::forFormalAccessedAddress(Res, getAccessKind());
+      }
+
       // TODO: if the base is +1, break apart its cleanup.
       auto Res = SGF.B.createTupleElementAddr(loc, base.getValue(),
                                               ElementIndex,
