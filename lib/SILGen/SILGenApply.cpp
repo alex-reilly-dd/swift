@@ -3997,9 +3997,20 @@ private:
          ++componentIndex) {
       auto elementType = substTupleType.getElementType(componentIndex);
 
-      // Skip non-pack-expansion elements (concrete types mixed with expansions)
-      if (!isa<PackExpansionType>(elementType))
+      // A concrete (non-expansion) element mixed in with pack expansions still
+      // occupies a single fixed slot in the pack. Project the tuple element's
+      // address into that slot directly — there's no expansion to loop over.
+      // Skipping it (as we used to) left the pack slot uninitialized, so the
+      // callee read a garbage element address.
+      if (!isa<PackExpansionType>(elementType)) {
+        SILType eltTy = packTy->getSILElementType(componentIndex);
+        auto packIndex =
+            SGF.B.createScalarPackIndex(loc, componentIndex, formalPackType);
+        auto tupleEltAddr = SGF.B.createTuplePackElementAddr(
+            loc, packIndex, tupleValue.getValue(), eltTy);
+        SGF.B.createPackElementSet(loc, tupleEltAddr, packIndex, pack);
         continue;
+      }
 
       // Get the lowered pack expansion type from the SIL pack type.
       SILType packExpansionTy = packTy->getSILElementType(componentIndex);
@@ -6741,10 +6752,22 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
   // Check if we have pack parameters - either labeled or unlabeled.
   // For pack params, the abstraction pattern is a tuple with one pack expansion
   // element, but the payloads/formalPayloadTupleType have the expanded elements.
-  bool isPackParam = element->getPayloadInterfaceType()->is<PackExpansionType>();
-  if (!isPackParam) {
-    if (auto tupleTy = element->getPayloadInterfaceType()->getAs<TupleType>()) {
-      isPackParam = tupleTy->containsPackExpansionType();
+  //
+  // This must be keyed off the enum element's *declared* parameter type, not
+  // its substituted payload. An element whose payload is an ordinary value that
+  // merely happens to be substituted to a pack-expansion tuple — e.g.
+  // `Result<(repeat each T), Error>.success(tuple)`, whose parameter is the
+  // scalar generic parameter `Success` — is not a pack parameter, and treating
+  // it as one would split it element-wise and trip the abstraction-pattern
+  // assertion in ArgumentSource::forwardInto (rdar://121489308). This mirrors
+  // the `hasPackParam` check in isEnumElementPayloadTupled above.
+  bool isPackParam = false;
+  if (auto *params = element->getParameterList()) {
+    if (params->size() == 1) {
+      auto paramTy = params->get(0)->getInterfaceType();
+      isPackParam = paramTy->is<PackExpansionType>() ||
+                    (paramTy->getAs<TupleType>() &&
+                     paramTy->castTo<TupleType>()->containsPackExpansionType());
     }
   }
 
@@ -6753,7 +6776,10 @@ emitEnumElementPayloads(SILGenFunction &SGF, SILLocation loc,
   // tuple by getEnumElementType (e.g., $(repeat each T)), even though the
   // AST type is a bare pack expansion. We need to treat this as a tuple
   // for initialization purposes to use the proper pack expansion infrastructure.
-  if (!treatAsTuple && eltPayloads.size() == 1) {
+  // Only do this when the element genuinely declares a pack-expansion payload
+  // (see isPackParam above); otherwise a whole-tuple payload would be wrongly
+  // split (rdar://121489308).
+  if (!treatAsTuple && isPackParam && eltPayloads.size() == 1) {
     if (auto tupleTy = payloadTy.getAs<TupleType>()) {
       if (tupleTy->getNumElements() == 1 &&
           isa<PackExpansionType>(tupleTy.getElementType(0))) {

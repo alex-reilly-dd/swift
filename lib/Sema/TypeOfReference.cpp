@@ -2996,14 +2996,32 @@ void ConstraintSystem::resolveOverload(OverloadChoice choice, DeclContext *useDC
     break;
 
   case OverloadChoiceKind::MaterializePack: {
-    // Since pack expansion is only applicable to single element tuples at the
-    // moment we can just look through l-value base to load it.
-    //
-    // In the future, _if_ the syntax allows for multiple expansions
-    // this code would have to be adjusted to project l-value from the
-    // base type just like TupleIndex does.
-    declRefType.adjustedReferenceType =
-        getPatternTypeOfSingleUnlabeledPackExpansionTuple(choice.getBaseType());
+    // The reference type is the pattern type of the tuple's pack-expansion
+    // element. This handles both single-element pack tuples (`(repeat each U)`,
+    // via `.element`) and mixed tuples with a unique unlabeled pack element
+    // (`([UInt8], repeat each U)`, via positional `.N`).
+    Type patternType;
+    if (auto *tuple =
+            choice.getBaseType()->getRValueType()->getAs<TupleType>()) {
+      for (const auto &elt : tuple->getElements()) {
+        auto *expansion = elt.getType()->getAs<PackExpansionType>();
+        if (!expansion)
+          continue;
+        // Only a unique, unlabeled pack-expansion element qualifies.
+        if (elt.hasName() || patternType) {
+          patternType = Type();
+          break;
+        }
+        patternType = expansion->getPatternType();
+      }
+    }
+    // Fall back for the single-element case where the element is still an
+    // unresolved type variable (handled via the locator).
+    if (!patternType) {
+      patternType =
+          getPatternTypeOfSingleUnlabeledPackExpansionTuple(choice.getBaseType());
+    }
+    declRefType.adjustedReferenceType = patternType;
     declRefType.referenceType = declRefType.adjustedReferenceType;
     break;
   }

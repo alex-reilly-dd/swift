@@ -898,6 +898,22 @@ namespace {
         return SGF.B.createTupleExtract(loc, base, ElementIndex);
       }
 
+      // If the tuple contains a pack expansion its layout is dynamic, so a
+      // fixed-offset `tuple_element_addr` is invalid even for a concrete
+      // (non-expansion) element. Project the element through a structural pack
+      // index into the tuple's induced pack type instead (mirrors the
+      // destructuring path in SILGenDecl). A static `TupleElementExpr` always
+      // names a scalar element, so a scalar pack index is well-formed here.
+      auto baseTupleType = base.getType().castTo<TupleType>();
+      if (baseTupleType->containsPackExpansionType()) {
+        auto packIndex = SGF.B.createScalarPackIndex(
+            loc, ElementIndex, baseTupleType.getInducedPackType());
+        auto Res = SGF.B.createTuplePackElementAddr(
+            loc, packIndex, base.getValue(),
+            getTypeOfRValue().getAddressType());
+        return ManagedValue::forFormalAccessedAddress(Res, getAccessKind());
+      }
+
       // TODO: if the base is +1, break apart its cleanup.
       auto Res = SGF.B.createTupleElementAddr(loc, base.getValue(),
                                               ElementIndex,
@@ -3947,7 +3963,27 @@ LValue SILGenLValue::visitPackElementExpr(PackElementExpr *e,
     auto elementTy =
       SGF.getLoweredType(substFormalType).getAddressType();
     auto tupleAddr = activeExpansion->MaterializedPacks.find(packExpr);
+
+    // The materialized tuple may contain concrete elements alongside the pack
+    // expansion (e.g. `(String, repeat each U)` for `tuple.1`). The active
+    // expansion's index only indexes the expansion itself, so compose it into
+    // an index over the tuple's full induced pack type; otherwise the pack
+    // lengths disagree (`Pack{repeat each U}` vs `Pack{String, repeat each U}`).
     auto packIndex = activeExpansion->ExpansionIndex;
+    auto tupleType = tupleAddr->second->getType().castTo<TupleType>();
+    auto inducedPackType = tupleType.getInducedPackType();
+    if (inducedPackType->getNumElements() != 1) {
+      unsigned componentIndex = 0;
+      for (auto n = inducedPackType->getNumElements();
+           componentIndex != n; ++componentIndex) {
+        if (isa<PackExpansionType>(
+                inducedPackType.getElementType(componentIndex)))
+          break;
+      }
+      packIndex = SGF.B.createPackPackIndex(e, componentIndex, packIndex,
+                                            inducedPackType);
+    }
+
     auto elementAddr =
       SGF.B.createTuplePackElementAddr(e, packIndex, tupleAddr->second, elementTy);
     return LValue::forAddress(accessKind, ManagedValue::forLValue(elementAddr),

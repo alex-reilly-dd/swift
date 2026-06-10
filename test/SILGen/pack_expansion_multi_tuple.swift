@@ -1,4 +1,4 @@
-// RUN: %target-swift-emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-emit-silgen %s -target %target-swift-5.9-abi-triple | %FileCheck %s
 
 // Test that tuples containing multiple pack expansions can be passed to
 // functions expecting a single pack expansion tuple parameter.

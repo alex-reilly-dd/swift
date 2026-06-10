@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-typecheck-verify-swift -target %target-swift-5.9-abi-triple
 
 enum Wrapper<each T> {
     case values(repeat each T)

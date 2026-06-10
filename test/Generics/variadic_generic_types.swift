@@ -4,15 +4,15 @@
 struct MultiplePack<each T, each U> {} // expected-error {{generic type cannot declare more than one type pack}}
 typealias MultiplePackAlias<each T, each U> = (repeat each T, repeat each U) // expected-error {{generic type cannot declare more than one type pack}}
 
-// Temporary limitations
-enum EnumWithPack<each T> { // expected-error {{enums cannot declare a type pack}}
+// Enums and classes may declare a type pack.
+enum EnumWithPack<each T> {
   case cheddar
 }
 
 class ClassWithPack<each T> {}
 
 struct OuterStruct<each T> {
-  enum NestedEnum { // expected-error {{enums cannot declare a type pack}}
+  enum NestedEnum {
     case smokedGouda
   }
 

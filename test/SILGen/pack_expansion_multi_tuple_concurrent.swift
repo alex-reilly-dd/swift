@@ -1,4 +1,4 @@
-// RUN: %target-build-swift -parse-as-library %s -o %t
+// RUN: %target-build-swift -parse-as-library %s -target %target-swift-5.9-abi-triple -o %t
 // RUN: %target-run %t | %FileCheck %s
 // REQUIRES: executable_test
 // REQUIRES: concurrency
